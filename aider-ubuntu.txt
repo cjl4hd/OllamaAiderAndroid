@@ -1,0 +1,72 @@
+#!/data/data/com.termux/files/usr/bin/bash
+#We've setup the following command inside of 
+#nano $PREFIX/bin/aider-ubuntu
+#which $PREFIX should resolve to
+#/data/data/com.termux/files/usr/
+
+#proot-distro login ubuntu -- bash -lc 'aider "$@"' bash "$@"
+
+#This command does a few things:
+
+"proot-distro login ubuntu"
+This is the bridge from Termux into your Ubuntu container.
+Think:
+Termux shell
+    |
+    | proot-distro login ubuntu
+    ↓
+Ubuntu shell
+Without this, you are still in Android/Termux.
+The -- means:
+Everything after this is the command I want to run inside Ubuntu.
+So:
+proot-distro login ubuntu -- <command>
+means:
+"Enter Ubuntu, then execute <command> there."
+
+"bash -lc"
+Inside Ubuntu, you are launching:
+bash -lc 'aider "$@"'
+The flags:
+-l = login shell
+This is important.
+A login shell loads things like:
+~/.profile
+environment setup
+paths added by installers
+-c = execute command
+It means:
+"Run the following string as a command."
+
+bash "$@"
+looks strange, but it is a standard trick.
+The full structure:
+bash -lc 'aider "$@"' bash "$@"
+breaks down as:
+bash
+  -l
+  -c
+  "aider "$@""
+  bash
+  remaining arguments...
+For bash -c, the first argument after the command string becomes $0.
+Example:
+bash -c 'echo $0 $1' hello world
+prints:
+hello world
+So here:
+bash "$@"
+sets:
+$0 = bash
+$1 = first argument from Termux
+$2 = second argument
+...
+Then inside:
+aider "$@"
+passes those arguments through.
+So this works:
+From Termux:
+aider-ubuntu --model qwen --chat-mode ask
+becomes:
+Inside Ubuntu:
+aider --model qwen --chat-mode ask
