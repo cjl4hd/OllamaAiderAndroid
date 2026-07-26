@@ -1,0 +1,58 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+RESET="\033[0m"
+
+pass() {
+    echo -e "${GREEN}✓${RESET} $1"
+}
+
+fail() {
+    echo -e "${RED}✗${RESET} $1"
+}
+
+echo
+echo "AI Environment Doctor"
+echo "====================="
+echo
+echo "Work in progress. Aider detection fails, ollama detection fails. Model detection fails."
+echo "Ollama API fails"
+
+command -v ollama >/dev/null \
+    && pass "Ollama installed" \
+    || fail "Ollama missing"
+
+command -v aider >/dev/null \
+    && pass "Aider installed" \
+    || fail "Aider missing"
+
+command -v proot-distro >/dev/null \
+    && pass "proot-distro installed" \
+    || fail "proot-distro missing"
+
+proot-distro login ubuntu -- true >/dev/null 2>&1 \
+    && pass "Ubuntu launches" \
+    || fail "Ubuntu failed"
+
+pgrep -f "ollama serve" >/dev/null \
+    && pass "Ollama server running" \
+    || fail "Ollama server not running"
+
+ollama list | grep -q "qwen-coder-7b" \
+    && pass "qwen-coder-7b installed" \
+    || fail "Model missing"
+
+curl -s http://127.0.0.1:11434/api/tags >/dev/null \
+    && pass "Ollama API reachable" \
+    || fail "Ollama API unreachable"
+
+echo
+echo "Versions"
+echo "--------"
+
+ollama --version
+aider --version
+
+echo
+echo "Doctor finished."

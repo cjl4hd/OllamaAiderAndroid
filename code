@@ -1,0 +1,70 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+# Start Ollama if it isn't already running
+if ! pgrep -f "ollama serve" >/dev/null; then
+    echo "Starting Ollama..."
+    nohup ollama serve >/dev/null 2>&1 &
+    sleep 3
+fi
+
+# Get installed models
+mapfile -t MODELS < <(ollama list | awk 'NR>1 {print $1}')
+
+if [ ${#MODELS[@]} -eq 0 ]; then
+    echo "No Ollama models installed."
+    exit 1
+fi
+
+echo
+echo "Available models:"
+for i in "${!MODELS[@]}"; do
+    printf "%2d) %s\n" $((i+1)) "${MODELS[$i]}"
+done
+echo
+
+read -p "Choose model [1]: " choice
+choice=${choice:-1}
+
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#MODELS[@]}" ]; then
+    echo "Invalid selection."
+    exit 1
+fi
+
+MODEL="${MODELS[$((choice-1))]}"
+
+# Define your projects directory path
+TARGET_DIR="/data/data/com.termux/files//usr/var/lib/proot-distro/containers/ubuntu/rootfs/root/projects"
+
+# Check if the directory exists
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "Error: $TARGET_DIR does not exist."
+    exit 1
+fi
+
+echo "Please choose a project directory:"
+
+# Select from directories inside the target path
+select dir in "$TARGET_DIR"/*/; do
+    if [ -n "$dir" ]; then
+        # Save full path to a variable (removes trailing slash)
+        FULL_PATH="${dir%/}"
+        
+        # Save just the folder name to a variable
+        PROJECT_NAME=$(basename "$FULL_PATH")
+        
+        echo "Full Path: $FULL_PATH"
+        echo "Project Name: $PROJECT_NAME"
+        break
+    else
+        echo "Invalid choice. Try again."
+    fi
+done
+
+echo "Launching Aider with $MODEL..."
+proot-distro login ubuntu -- \
+  bash -lc "cd projects/$PROJECT_NAME && aider --model ollama_chat/$MODEL"
+
+# Launch Aider inside Ubuntu
+#old hardcoded version
+#exec proot-distro login ubuntu -- \
+#    bash -lc 'aider --model ollama_chat/qwen-coder-7b "$@"' bash "$@"

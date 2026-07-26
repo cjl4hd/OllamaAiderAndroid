@@ -1,0 +1,52 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+set -e
+
+echo "===================================="
+echo " Android AI Environment Updater"
+echo "===================================="
+echo
+echo "This will update:"
+echo "  • Termux packages"
+echo "  • Ollama"
+echo "  • Aider (pipx)"
+echo "  • Ubuntu packages"
+echo
+read -p "Continue? [Y/n] " ans
+
+case "$ans" in
+    [Nn]*) exit 0 ;;
+esac
+
+echo
+echo "===== Updating Termux ====="
+pkg update
+pkg upgrade -y
+
+echo
+echo "===== Updating Aider ====="
+pipx upgrade-all
+
+echo
+echo "===== Updating Ubuntu ====="
+proot-distro login ubuntu -- bash -lc '
+set -e
+apt update
+DEBIAN_FRONTEND=noninteractive apt upgrade -y
+apt autoremove -y
+apt autoclean
+'
+
+echo
+echo "===== Versions ====="
+echo "Ollama: $(ollama --version)"
+echo "Aider:  $(aider --version)"
+
+echo
+proot-distro login ubuntu -- bash -lc '
+echo "Ubuntu:"
+lsb_release -d
+'
+
+echo
+echo "✔ Update complete."
