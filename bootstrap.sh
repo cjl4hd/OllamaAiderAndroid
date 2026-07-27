@@ -3,8 +3,16 @@
 git pull
 
 #check if proot environment exists and works
-#if env is no good or doesn't exist, build proot environment
-
+if ! proot-distro list >/dev/null 2>&1; then
+	#if env is no good or doesn't exist, build proot environment
+	pkg update && pkg upgrade -y
+	pkg install proot-distro -y
+	proot-distro install ubuntu
+else
+	#else update
+	proot-distro login ubuntu
+	apt update && apt upgrade -y
+fi
 #check if python env is setup / up to date
 #if not, setup python virtual environment and install ollama and aider
 
