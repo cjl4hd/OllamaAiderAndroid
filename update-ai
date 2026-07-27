@@ -1,16 +1,24 @@
 #!/data/data/com.termux/files/usr/bin/bash
-
 set -e
+
+# ---- Paths ----
+UBUNTU_ROOTFS="/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubuntu/rootfs"
+UBUNTU_HOME="$UBUNTU_ROOTFS/root"
+TERMUX_HOME="/data/data/com.termux/files/home"
+ANDROID_HOME="/storage/emulated/0"
+BIN_DIR="/data/data/com.termux/files/usr/bin"
+PROJECT_DIR="$UBUNTU_HOME/projects/OllamaAiderAndroid"
 
 echo "===================================="
 echo " Android AI Environment Updater"
 echo "===================================="
 echo
-echo "This will update:"
-echo "  • Termux packages"
-echo "  • Ollama"
-echo "  • Aider (pipx)"
-echo "  • Ubuntu packages"
+echo "This will:"
+echo "  • Pull latest project files (git)"
+echo "  • Install or update the Ubuntu proot environment"
+echo "  • Update Termux packages"
+echo "  • Set up / update the Python env, Ollama, and Aider"
+echo "  • Refresh symlinks (Termux home, Ubuntu home, bin path)"
 echo
 read -p "Continue? [Y/n] " ans
 
@@ -18,35 +26,76 @@ case "$ans" in
     [Nn]*) exit 0 ;;
 esac
 
+# Assuming we're in the OllamaAiderAndroid project dir
+cd "$PROJECT_DIR"
+
 echo
-echo "===== Updating Termux ====="
+echo "===== Pulling latest from git ====="
+git pull
+
+echo
+echo "===== Checking proot Ubuntu environment ====="
+# --installed (not just `list`) actually reflects whether ubuntu is present,
+# rather than just whether the proot-distro command itself works
+if ! proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
+    echo "Ubuntu not found - installing proot-distro + ubuntu..."
+    pkg update && pkg upgrade -y
+    pkg install proot-distro -y
+    proot-distro install ubuntu
+else
+    echo "Ubuntu already installed - updating packages..."
+    proot-distro login ubuntu -- bash -lc '
+    set -e
+    apt update
+    DEBIAN_FRONTEND=noninteractive apt upgrade -y
+    apt autoremove -y
+    apt autoclean
+    '
+fi
+
+echo
+echo "===== Termux packages ====="
 pkg update
 pkg upgrade -y
 
+# check if python env is setup / up to date
+# if not, setup python virtual environment and install ollama and aider
 echo
-echo "===== Updating Aider ====="
-pipx upgrade-all
+echo "===== Python env / Ollama / Aider ====="
+source uv_aider_install.sh
 
 echo
-echo "===== Updating Ubuntu ====="
-proot-distro login ubuntu -- bash -lc '
-set -e
-apt update
-DEBIAN_FRONTEND=noninteractive apt upgrade -y
-apt autoremove -y
-apt autoclean
-'
+echo "===== Updating Aider (pipx) ====="
+pipx upgrade-all
+
+# we will keep all scripts in the git repo and soft link to them to make
+# management easier
+
+echo
+echo "===== Setting up symlinks ====="
+
+# copy soft links into termux home dir: Ubuntu home + Android storage,
+# --no-dereference (-n) so re-running this replaces the link instead of
+# following it into the target directory
+ln -sfn "$UBUNTU_HOME" "$TERMUX_HOME/ubuntu-home"
+ln -sfn "$ANDROID_HOME" "$TERMUX_HOME/android-home"
+
+# copy soft links into ubuntu home dir: Termux home + Android storage.
+# proot-distro already bind-mounts both of these into the chroot at the
+# same absolute paths, so these targets resolve correctly from inside Ubuntu
+ln -sfn "$TERMUX_HOME" "$UBUNTU_HOME/termux-home"
+ln -sfn "/sdcard" "$UBUNTU_HOME/android-home"
+
+# copy soft links into bin path so update-ai / doctor-ai are runnable by name
+chmod +x "$PROJECT_DIR/update-ai" "$PROJECT_DIR/doctor-ai"
+ln -sfn "$PROJECT_DIR/update-ai" "$BIN_DIR/update-ai"
+ln -sfn "$PROJECT_DIR/doctor-ai" "$BIN_DIR/doctor-ai"
 
 echo
 echo "===== Versions ====="
 echo "Ollama: $(ollama --version)"
 echo "Aider:  $(aider --version)"
-
-echo
-proot-distro login ubuntu -- bash -lc '
-echo "Ubuntu:"
-lsb_release -d
-'
+proot-distro login ubuntu -- bash -lc 'echo "Ubuntu:"; lsb_release -d'
 
 echo
 echo "✔ Update complete."
