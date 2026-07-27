@@ -47,9 +47,12 @@ This command lets you choose your AI model and project, then runs ollama server 
 
 ## Important Commands
 
-code
-doctor-ai
-update-ai
+- add_models.sh
+- code
+- doctor-ai
+- update-ai
+- Ubuntu.sh
+- uv_aider_install.sh
 
 ## Notes
 
