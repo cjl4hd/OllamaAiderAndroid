@@ -7,7 +7,7 @@
 - Ubuntu (proot-distro)
 
 ## Architecture
-
+```
 Android
 └── Termux
     ├── Ollama
@@ -15,8 +15,9 @@ Android
     ├── proot-distro
     │   └── Ubuntu
     │       └── Aider
+    │       └── projects (git) 
     └── helper scripts
-
+```
 ## Models
 
 Android Storage:
@@ -26,6 +27,8 @@ Imported into Ollama using:
 
 FROM /data/data/com.termux/files/home/storage/shared/Models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
 
+This allows you to download models on your phone and point to them from Termux/ubuntu. I created a Models directory in my android home directory to separate from Downloads. These files are imported into Ollama for management, meaning you can delete them from the model directory once imported. 
+
 Create:
 
 ollama create qwen-coder-7b -f Modelfile
@@ -34,36 +37,13 @@ ollama create qwen-coder-7b -f Modelfile
 
 code
 
-Equivalent:
-
-proot-distro login ubuntu -- bash -lc \
-'aider --model ollama_chat/qwen-coder-7b'
+This command lets you choose your AI model and project, then runs ollama server and aider client in the project directory. 
 
 ## Important Commands
 
-Start Ollama
-
-ollama serve
-
-List models
-
-ollama list
-
-Update Aider
-
-pipx upgrade aider-chat
-
-Update Termux
-
-pkg update
-pkg upgrade
-
-Update Ubuntu
-
-proot-distro login ubuntu
-
-apt update
-apt upgrade
+code
+doctor-ai
+update-ai
 
 ## Notes
 
