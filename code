@@ -1,5 +1,17 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
+#TODO features:
+#Main menu with:
+#Launch Aider, show models with weight, size, benchmark if applicable
+#Import GGUFs
+#Update the environment
+#Run diagnostics
+#Benchmark models
+#Manage Ollama and models: rename, delete, show info, show modelfile, export modelfile
+#Restart Ollama
+#Quick chat "ollama run <model>" without aider
+#View system status
+
 # Start Ollama if it isn't already running
 if ! pgrep -f "ollama serve" >/dev/null; then
     echo "Starting Ollama..."
