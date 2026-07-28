@@ -5,6 +5,7 @@ This project is a set of scripts to install Ollama, proot distro Ubuntu, and Aid
 - make softlinks files in desired directories, pointing to project dir. code, doctor-Ai, and update-Ai all go into the bin directory in PATH, so they can be run from anywhere. 
 - Soft links between Termux and Ubuntu need to be copied into respective directories to make it easy to access each space.
 - Verify setup / update / run scripts on another phone
+- add support for whisper
 
 ## Hardware
 - Samsung Galaxy S26 (Snapdragon)

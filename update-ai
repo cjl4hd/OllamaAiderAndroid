@@ -62,11 +62,11 @@ pkg upgrade -y
 # if not, setup python virtual environment and install ollama and aider
 echo
 echo "===== Python env / Ollama / Aider ====="
-source uv_aider_install.sh
+proot-distro login ubuntu -- bash -lc 'source uv_aider_install.sh'
 
 echo
-echo "===== Updating Aider (pipx) ====="
-pipx upgrade-all
+echo "===== Updating Aider (pipx, inside Ubuntu) ====="
+proot-distro login ubuntu -- bash -lc 'pipx upgrade-all'
 
 # we will keep all scripts in the git repo and soft link to them to make
 # management easier
