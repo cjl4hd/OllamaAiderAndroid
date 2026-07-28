@@ -34,12 +34,17 @@ echo "===== Pulling latest from git ====="
 git pull
 
 echo
+echo "===== Termux packages ====="
+pkg update
+pkg upgrade -y
+
+echo
 echo "===== Checking proot Ubuntu environment ====="
 # --installed (not just `list`) actually reflects whether ubuntu is present,
 # rather than just whether the proot-distro command itself works
 if ! proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
     echo "Ubuntu not found - installing proot-distro + ubuntu..."
-    pkg update && pkg upgrade -y
+    #pkg update && pkg upgrade -y
     pkg install proot-distro -y
     proot-distro install ubuntu
 else
@@ -53,20 +58,29 @@ else
     '
 fi
 
-echo
-echo "===== Termux packages ====="
-pkg update
-pkg upgrade -y
-
 # check if python env is setup / up to date
 # if not, setup python virtual environment and install ollama and aider
 echo
-echo "===== Python env / Ollama / Aider ====="
-proot-distro login ubuntu -- bash -lc 'source uv_aider_install.sh'
+echo "===== Python env / Aider ====="
+if ! command -v aider &> /dev/null; then
+proot-distro login ubuntu -- bash -lc '
+	curl -LsSf https://astral.sh/uv/install.sh | sh
+	source ~/.bashrc
+	uv python install 3.12
+	uv tool install aider-chat --python 3.12
 
-echo
-echo "===== Updating Aider (pipx, inside Ubuntu) ====="
-proot-distro login ubuntu -- bash -lc 'pipx upgrade-all'
+	aider --version
+'
+else
+#python and aider are installed, so update
+proot-distro login ubuntu -- bash -lc '
+	uv tool upgrade --python python3.12 aider-chat
+	'
+fi
+##
+#echo
+#echo "===== Updating Aider (pipx, inside Ubuntu) ====="
+#proot-distro login ubuntu -- bash -lc 'pipx upgrade-all'
 
 # we will keep all scripts in the git repo and soft link to them to make
 # management easier
