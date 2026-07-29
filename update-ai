@@ -34,7 +34,7 @@ echo "===== Pulling latest from git ====="
 git pull
 
 echo
-echo "===== Termux packages ====="
+echo "===== Termux packages and Ollama ====="
 pkg update
 pkg upgrade -y
 
