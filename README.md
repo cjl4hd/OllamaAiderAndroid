@@ -8,7 +8,10 @@ This project is a set of scripts to install Ollama, proot distro Ubuntu, and Aid
 
 Todo:
 - Verify setup / update / run scripts on another phone
-- add support for whisper
+- add support for optional plugins/tools:
+- whisper
+- kiwix
+- ssh
 
 ## Hardware
 - Samsung Galaxy S26 (Snapdragon)
