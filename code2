@@ -8,6 +8,19 @@ TARGET_DIR="/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubun
 
 mkdir -p "$CONFIG_DIR"
 
+#Parameters to optimize for S26
+#Force flahs attention, mandatory to unlock kv cache quantization
+export OLLAMA_FLASH_ATTENTION=1
+
+#Compress attention vectors to 8 bit int
+export OLLAMA_KV_CACHE_TYPE=q8_0
+
+#Ensure only 1 model used at a time
+OLLAMA_MAX_LOADED_MODELS=1
+
+# num_ctx 4096, num_predict 4096, num_thread 4, temperature 0.5 are model options, require 
+#ollama create <model> -f ./Modelfile
+
 start_ollama() {
 if ! pgrep -f "ollama serve" >/dev/null; then
  echo "Starting Ollama..."
