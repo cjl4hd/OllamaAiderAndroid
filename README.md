@@ -1,9 +1,12 @@
 # Android AI Development Environment
 
-This project is a set of scripts to install Ollama, proot distro Ubuntu, and Aider in an Android environment with minimal effort. The scripts are all there, what remains as a TODO in the form of a project setup/update script:
-- pull the repo
-- make softlinks files in desired directories, pointing to project dir. code, doctor-Ai, and update-Ai all go into the bin directory in PATH, so they can be run from anywhere. 
-- Soft links between Termux and Ubuntu need to be copied into respective directories to make it easy to access each space.
+This project is a set of scripts to install Ollama, proot distro Ubuntu, and Aider in an Android environment with minimal effort. Setup instructions:
+- git clone git@github.com:cjl4hd/OllamaAiderAndroid.git
+- git pull
+- update-ai
+- code
+
+Todo:
 - Verify setup / update / run scripts on another phone
 - add support for whisper
 
