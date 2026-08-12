@@ -1,122 +1,265 @@
-#!/data/data/com.termux/files/usr/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ---- Paths ----
-UBUNTU_ROOTFS="/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubuntu/rootfs"
+# =============================================================================
+# Android AI Environment Updater
+# Runs in Termux (host), NOT inside proot-distro Ubuntu
+# =============================================================================
+
+# --- Config ---
+CONFIG_FILE="$HOME/.ai-env.conf"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+# --- Defaults (overridable via ~/.ai-env.conf) ---
+PYTHON_VERSION="${PYTHON_VERSION:-3.12}"  # Python 3.12: most stable with aider-chat per upstream testing
+UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"  # Consider unique name for managed env
+PROJECT_NAME="${PROJECT_NAME:-OllamaAiderAndroid}"
+
+# --- Flags ---
+VERBOSE=false
+QUIET=false
+FORCE=false
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Updates the Android AI development environment (Termux + proot Ubuntu + Ollama + Aider).
+
+Options:
+  -v, --verbose    Detailed output
+  -q, --quiet      Suppress non-error output
+  -f, --force      Skip confirmation prompt
+  -h, --help       Show this help
+
+Environment (via ~/.ai-env.conf):
+  PYTHON_VERSION       Python version for UV (default: 3.12)
+  UBUNTU_DISTRO_NAME   proot-distro name (default: ubuntu)
+  PROJECT_NAME         Git project directory name (default: OllamaAiderAndroid)
+EOF
+    exit 0
+}
+
+log() { [ "$QUIET" = false ] && echo "$*"; }
+vlog() { [ "$VERBOSE" = true ] && echo "[DEBUG] $*"; }
+err() { echo "ERROR: $*" >&2; }
+die() { err "$*"; exit 1; }
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -v|--verbose) VERBOSE=true; shift ;;
+        -q|--quiet) QUIET=true; shift ;;
+        -f|--force) FORCE=true; shift ;;
+        -h|--help) usage ;;
+        *) die "Unknown option: $1" ;;
+    esac
+done
+
+# =============================================================================
+# Environment Validation
+# =============================================================================
+
+# Verify running in Termux host (not inside proot)
+if [ -n "${PROOT_DISTRO:-}" ] || [ ! -d "/data/data/com.termux" ]; then
+    die "This script must run in Termux (host), not inside proot-distro Ubuntu"
+fi
+
+log "Running in Termux (host)"
+
+# =============================================================================
+# Dynamic Path Detection with Fallbacks
+# =============================================================================
+
+TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
+UBUNTU_ROOTFS="$TERMUX_PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs"
 UBUNTU_HOME="$UBUNTU_ROOTFS/root"
-TERMUX_HOME="/data/data/com.termux/files/home"
 ANDROID_HOME="/storage/emulated/0"
-BIN_DIR="/data/data/com.termux/files/usr/bin"
-PROJECT_DIR="$UBUNTU_HOME/projects/OllamaAiderAndroid"
+BIN_DIR="$TERMUX_PREFIX/bin"
 
-echo "===================================="
-echo " Android AI Environment Updater"
-echo "===================================="
-echo
-echo "This will:"
-echo "  • Pull latest project files (git)"
-echo "  • Install or update the Ubuntu proot environment"
-echo "  • Update Termux packages"
-echo "  • Set up / update the Python env, Ollama, and Aider"
-echo "  • Refresh symlinks (Termux home, Ubuntu home, bin path)"
-echo
-read -p "Continue? [Y/n] " ans
+# Validate critical paths
+[ -d "$TERMUX_PREFIX" ] || die "Termux prefix not found: $TERMUX_PREFIX"
+[ -d "$TERMUX_HOME" ] || die "Termux home not found: $TERMUX_HOME"
 
-case "$ans" in
-    [Nn]*) exit 0 ;;
-esac
+vlog "TERMUX_PREFIX=$TERMUX_PREFIX"
+vlog "TERMUX_HOME=$TERMUX_HOME"
+vlog "UBUNTU_ROOTFS=$UBUNTU_ROOTFS"
+vlog "UBUNTU_HOME=$UBUNTU_HOME"
+vlog "ANDROID_HOME=$ANDROID_HOME"
+vlog "BIN_DIR=$BIN_DIR"
 
-# Assuming we're in the OllamaAiderAndroid project dir
+# =============================================================================
+# Project Directory Detection
+# =============================================================================
 
-cd "$PROJECT_DIR"
+find_project_dir() {
+    local candidates=(
+        "$TERMUX_HOME/$PROJECT_NAME"
+        "$UBUNTU_HOME/projects/$PROJECT_NAME"
+    )
+    
+    for dir in "${candidates[@]}"; do
+        if [ -d "$dir/.git" ]; then
+            echo "$dir"
+            return 0
+        fi
+    done
+    
+    # Fallback to hardcoded
+    local fallback="$UBUNTU_HOME/projects/$PROJECT_NAME"
+    if [ -d "$fallback/.git" ]; then
+        echo "$fallback"
+        return 0
+    fi
+    
+    return 1
+}
 
-echo
-echo "===== Pulling latest from git ====="
-#todo check if were in proot
-#git pull
-#else
-proot-distro login ubuntu -- bash -lc "
-	cd $PROJECT_DIR
-	git pull
-	"
+PROJECT_DIR_HOST=$(find_project_dir) || die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
+log "Project directory: $PROJECT_DIR_HOST"
 
-echo
-echo "===== Termux packages and Ollama ====="
+# =============================================================================
+# Confirmation
+# =============================================================================
+
+if [ "$FORCE" = false ]; then
+    cat <<EOF
+This will:
+  • Pull latest project files (git)
+  • Install or update the Ubuntu proot environment ($UBUNTU_DISTRO_NAME)
+  • Update Termux packages
+  • Set up / update the Python env (Python $PYTHON_VERSION), Ollama, and Aider
+  • Refresh symlinks (Termux home, Ubuntu home, bin path)
+
+EOF
+    read -p "Continue? [Y/n] " ans
+    case "$ans" in
+        [Nn]*) exit 0 ;;
+    esac
+fi
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+run_in_ubuntu() {
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1"
+}
+
+run_in_ubuntu_safe() {
+    local cmd="$1"
+    local desc="${2:-command}"
+    if ! run_in_ubuntu "$cmd"; then
+        err "$desc failed, attempting recovery..."
+        run_in_ubuntu "apt --fix-broken install -y && $cmd" || die "$desc failed after recovery"
+    fi
+}
+
+# =============================================================================
+# 1. Git Pull (on Host)
+# =============================================================================
+
+log ""
+log "===== Pulling latest from git (host) ====="
+cd "$PROJECT_DIR_HOST"
+if git pull; then
+    log "Git pull successful"
+else
+    err "Git pull failed (continuing anyway)"
+fi
+
+# =============================================================================
+# 2. Termux Packages
+# =============================================================================
+
+log ""
+log "===== Updating Termux packages ====="
 pkg update
-pkg upgrade -y
+pkg upgrade -y || {
+    err "pkg upgrade failed, attempting fix..."
+    pkg install -f $(pkg list-installed | cut -d'/' -f1) || die "Termux package recovery failed"
+}
 
-echo
-echo "===== Checking proot Ubuntu environment ====="
-# --installed (not just `list`) actually reflects whether ubuntu is present,
-# rather than just whether the proot-distro command itself works
-if ! proot-distro list 2>/dev/null | grep -q ubuntu; then
-    echo "Ubuntu not found - installing proot-distro + ubuntu..."
-    #pkg update && pkg upgrade -y
+# =============================================================================
+# 3. Proot Ubuntu Environment
+# =============================================================================
+
+log ""
+log "===== Checking proot Ubuntu environment ($UBUNTU_DISTRO_NAME) ====="
+
+if ! proot-distro list 2>/dev/null | grep -q "^$UBUNTU_DISTRO_NAME\s"; then
+    log "Ubuntu not found - installing proot-distro + $UBUNTU_DISTRO_NAME..."
     pkg install proot-distro -y
-    proot-distro install ubuntu
+    proot-distro install "$UBUNTU_DISTRO_NAME"
 else
-    echo "Ubuntu already installed - updating packages..."
-    proot-distro login ubuntu -- bash -lc '
-    set -e
-    apt update
-    DEBIAN_FRONTEND=noninteractive apt upgrade -y
-    apt autoremove -y
-    apt autoclean
-    '
+    log "$UBUNTU_DISTRO_NAME already installed - updating packages..."
+    run_in_ubuntu_safe "
+        apt update
+        DEBIAN_FRONTEND=noninteractive apt upgrade -y
+        apt autoremove -y
+        apt autoclean
+    " "Ubuntu package update"
 fi
 
-# check if python env is setup / up to date
-# if not, setup python virtual environment and install ollama and aider
-echo
-echo "===== Python env / Aider ====="
-if ! command -v aider &> /dev/null; then
-proot-distro login ubuntu -- bash -lc '
-	curl -LsSf https://astral.sh/uv/install.sh | sh
-	source ~/.bashrc
-	uv python install 3.12
-	uv tool install aider-chat --python 3.12
+# =============================================================================
+# 4. Python / UV / Aider (inside Ubuntu)
+# =============================================================================
 
-	aider --version
-'
+log ""
+log "===== Python env / Aider (Python $PYTHON_VERSION) ====="
+
+# Check if aider exists inside Ubuntu
+if ! run_in_ubuntu "command -v aider" >/dev/null 2>&1; then
+    log "Aider not found - installing UV + Python $PYTHON_VERSION + aider-chat..."
+    run_in_ubuntu_safe "
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        source ~/.bashrc
+        uv python install $PYTHON_VERSION
+        uv tool install aider-chat --python $PYTHON_VERSION
+        aider --version
+    " "Aider initial install"
 else
-#python and aider are installed, so update
-proot-distro login ubuntu -- bash -lc '
-	uv tool upgrade --python python3.12 aider-chat
-	'
+    log "Aider found - upgrading..."
+    run_in_ubuntu_safe "
+        uv tool upgrade --python python$PYTHON_VERSION aider-chat
+    " "Aider upgrade"
 fi
-##
-#echo
-#echo "===== Updating Aider (pipx, inside Ubuntu) ====="
-#proot-distro login ubuntu -- bash -lc 'pipx upgrade-all'
 
-# we will keep all scripts in the git repo and soft link to them to make
-# management easier
+# =============================================================================
+# 5. Symlinks
+# =============================================================================
 
-echo
-echo "===== Setting up symlinks ====="
+log ""
+log "===== Setting up symlinks ====="
 
-# copy soft links into termux home dir: Ubuntu home + Android storage,
-# --no-dereference (-n) so re-running this replaces the link instead of
-# following it into the target directory
+# Ensure Ubuntu home exists
+[ -d "$UBUNTU_HOME" ] || die "Ubuntu home not found: $UBUNTU_HOME (run proot-distro install first)"
+
+# Termux home -> Ubuntu home + Android storage
 ln -sfn "$UBUNTU_HOME" "$TERMUX_HOME/ubuntu-home"
 ln -sfn "$ANDROID_HOME" "$TERMUX_HOME/android-home"
 
-# copy soft links into ubuntu home dir: Termux home + Android storage.
-# proot-distro already bind-mounts both of these into the chroot at the
-# same absolute paths, so these targets resolve correctly from inside Ubuntu
+# Ubuntu home -> Termux home + Android storage (using $ANDROID_HOME consistently)
 ln -sfn "$TERMUX_HOME" "$UBUNTU_HOME/termux-home"
-ln -sfn "/sdcard" "$UBUNTU_HOME/android-home"
+ln -sfn "$ANDROID_HOME" "$UBUNTU_HOME/android-home"
 
-# copy soft links into bin path so update-ai / doctor-ai are runnable by name
-chmod +x "$PROJECT_DIR/update-ai" "$PROJECT_DIR/doctor-ai"
-ln -sfn "$PROJECT_DIR/update-ai" "$BIN_DIR/update-ai"
-ln -sfn "$PROJECT_DIR/doctor-ai" "$BIN_DIR/doctor-ai"
+# Bin links for update-ai / doctor-ai
+chmod +x "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai"
+ln -sfn "$PROJECT_DIR_HOST/update-ai" "$BIN_DIR/update-ai"
+ln -sfn "$PROJECT_DIR_HOST/doctor-ai" "$BIN_DIR/doctor-ai"
 
-echo
-echo "===== Versions ====="
-echo "Ollama: $(ollama --version)"
-echo "Aider:  $(aider --version)"
-proot-distro login ubuntu -- bash -lc 'echo "Ubuntu:"; lsb_release -d'
+log "Symlinks updated"
 
-echo
-echo "✔ Update complete."
+# =============================================================================
+# 6. Version Summary
+# =============================================================================
+
+log ""
+log "===== Versions ====="
+log "Ollama: $(ollama --version 2>/dev/null || echo 'not installed')"
+log "Aider:  $(run_in_ubuntu 'aider --version' 2>/dev/null || echo 'not installed')"
+run_in_ubuntu 'echo "Ubuntu:"; lsb_release -d' 2>/dev/null || log "Ubuntu: version unknown"
+
+log ""
+log "✔ Update complete."
