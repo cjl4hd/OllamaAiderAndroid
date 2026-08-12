@@ -27,11 +27,19 @@ case "$ans" in
 esac
 
 # Assuming we're in the OllamaAiderAndroid project dir
+
 cd "$PROJECT_DIR"
 
 echo
 echo "===== Pulling latest from git ====="
-git pull
+#todo check if were in proot
+#git pull
+#else
+proot-distro login ubuntu -- bash -lc "
+	cd $PROJECT_DIR
+	pwd
+	git pull
+	"
 
 echo
 echo "===== Termux packages and Ollama ====="
