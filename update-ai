@@ -66,6 +66,7 @@ if [ -n "${PROOT_DISTRO:-}" ] || [ ! -d "/data/data/com.termux" ]; then
 fi
 
 log "Running in Termux (host)"
+log "DEBUG: About to validate paths"
 
 # =============================================================================
 # Dynamic Path Detection with Fallbacks
@@ -79,10 +80,13 @@ ANDROID_HOME="/storage/emulated/0"
 BIN_DIR="$TERMUX_PREFIX/bin"
 
 # Validate critical paths
+log "DEBUG: Validating TERMUX_PREFIX=$TERMUX_PREFIX"
 [ -d "$TERMUX_PREFIX" ] || die "Termux prefix not found: $TERMUX_PREFIX"
+log "DEBUG: Validating TERMUX_HOME=$TERMUX_HOME"
 [ -d "$TERMUX_HOME" ] || die "Termux home not found: $TERMUX_HOME"
 
 log "Paths validated: TERMUX_PREFIX=$TERMUX_PREFIX, TERMUX_HOME=$TERMUX_HOME"
+log "DEBUG: About to find project dir"
 
 vlog "TERMUX_PREFIX=$TERMUX_PREFIX"
 vlog "TERMUX_HOME=$TERMUX_HOME"
@@ -96,13 +100,16 @@ vlog "BIN_DIR=$BIN_DIR"
 # =============================================================================
 
 find_project_dir() {
+    log "DEBUG: find_project_dir called"
     local candidates=(
         "$TERMUX_HOME/$PROJECT_NAME"
         "$UBUNTU_HOME/projects/$PROJECT_NAME"
     )
     
     for dir in "${candidates[@]}"; do
+        log "DEBUG: Checking $dir"
         if [ -d "$dir/.git" ]; then
+            log "DEBUG: Found .git at $dir"
             echo "$dir"
             return 0
         fi
@@ -110,17 +117,19 @@ find_project_dir() {
     
     # Fallback to hardcoded
     local fallback="$UBUNTU_HOME/projects/$PROJECT_NAME"
+    log "DEBUG: Checking fallback $fallback"
     if [ -d "$fallback/.git" ]; then
+        log "DEBUG: Found .git at fallback $fallback"
         echo "$fallback"
         return 0
     fi
     
+    log "DEBUG: No .git found in any candidate"
     return 1
 }
 
 PROJECT_DIR_HOST=$(find_project_dir) || die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
 log "Project directory found: $PROJECT_DIR_HOST"
-log "Project directory: $PROJECT_DIR_HOST"
 
 # =============================================================================
 # Confirmation
