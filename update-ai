@@ -37,7 +37,6 @@ echo "===== Pulling latest from git ====="
 #else
 proot-distro login ubuntu -- bash -lc "
 	cd $PROJECT_DIR
-	pwd
 	git pull
 	"
 
@@ -50,7 +49,7 @@ echo
 echo "===== Checking proot Ubuntu environment ====="
 # --installed (not just `list`) actually reflects whether ubuntu is present,
 # rather than just whether the proot-distro command itself works
-if ! proot-distro list --installed 2>/dev/null | grep -q ubuntu; then
+if ! proot-distro list 2>/dev/null | grep -q ubuntu; then
     echo "Ubuntu not found - installing proot-distro + ubuntu..."
     #pkg update && pkg upgrade -y
     pkg install proot-distro -y
