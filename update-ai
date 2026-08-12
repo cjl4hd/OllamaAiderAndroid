@@ -82,6 +82,8 @@ BIN_DIR="$TERMUX_PREFIX/bin"
 [ -d "$TERMUX_PREFIX" ] || die "Termux prefix not found: $TERMUX_PREFIX"
 [ -d "$TERMUX_HOME" ] || die "Termux home not found: $TERMUX_HOME"
 
+log "Paths validated: TERMUX_PREFIX=$TERMUX_PREFIX, TERMUX_HOME=$TERMUX_HOME"
+
 vlog "TERMUX_PREFIX=$TERMUX_PREFIX"
 vlog "TERMUX_HOME=$TERMUX_HOME"
 vlog "UBUNTU_ROOTFS=$UBUNTU_ROOTFS"
@@ -117,6 +119,7 @@ find_project_dir() {
 }
 
 PROJECT_DIR_HOST=$(find_project_dir) || die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
+log "Project directory found: $PROJECT_DIR_HOST"
 log "Project directory: $PROJECT_DIR_HOST"
 
 # =============================================================================
