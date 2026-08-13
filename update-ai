@@ -128,7 +128,10 @@ find_project_dir() {
     return 1
 }
 
-PROJECT_DIR_HOST=$(find_project_dir) || die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
+# Capture output and check return code in one call
+PROJECT_DIR_HOST=$(find_project_dir) || {
+    die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
+}
 log "Project directory found: $PROJECT_DIR_HOST"
 
 # =============================================================================
