@@ -36,12 +36,14 @@ Environment (via ~/.ai-env.conf):
   PYTHON_VERSION       Python version for UV (default: 3.12)
   UBUNTU_DISTRO_NAME   proot-distro name (default: ubuntu)
   PROJECT_NAME         Git project directory name (default: OllamaAiderAndroid)
+  PROJECT_DIR          Absolute path to project dir, overrides auto-detection
+                        (use this if your clone isn't in one of the usual spots)
 EOF
     exit 0
 }
 
-log() { [ "$QUIET" = false ] && echo "$*"; }
-vlog() { [ "$VERBOSE" = true ] && echo "[DEBUG] $*"; }
+log() { [ "$QUIET" = false ] && echo "$*" >&2; return 0; }
+vlog() { [ "$VERBOSE" = true ] && echo "[DEBUG] $*" >&2; return 0; }
 err() { echo "ERROR: $*" >&2; }
 die() { err "$*"; exit 1; }
 
@@ -86,6 +88,12 @@ log "DEBUG: Validating TERMUX_HOME=$TERMUX_HOME"
 [ -d "$TERMUX_HOME" ] || die "Termux home not found: $TERMUX_HOME"
 
 log "Paths validated: TERMUX_PREFIX=$TERMUX_PREFIX, TERMUX_HOME=$TERMUX_HOME"
+
+# UBUNTU_ROOTFS/UBUNTU_HOME may legitimately not exist yet on a first run
+# (proot-distro install happens later), so these are warnings, not fatal.
+[ -d "$UBUNTU_ROOTFS" ] || log "Note: Ubuntu rootfs not found yet at $UBUNTU_ROOTFS (will be installed if needed)"
+[ -d "$ANDROID_HOME" ] || log "Warning: Android storage not found at $ANDROID_HOME (grant storage permission with 'termux-setup-storage' if symlinks fail)"
+
 log "DEBUG: About to find project dir"
 
 vlog "TERMUX_PREFIX=$TERMUX_PREFIX"
@@ -101,11 +109,24 @@ vlog "BIN_DIR=$BIN_DIR"
 
 find_project_dir() {
     log "DEBUG: find_project_dir called"
+
+    # Explicit override always wins, for clones that live outside the usual spots
+    if [ -n "${PROJECT_DIR:-}" ]; then
+        log "DEBUG: PROJECT_DIR override set, checking $PROJECT_DIR"
+        if [ -d "$PROJECT_DIR/.git" ]; then
+            log "DEBUG: Found .git at override $PROJECT_DIR"
+            echo "$PROJECT_DIR"
+            return 0
+        fi
+        log "DEBUG: PROJECT_DIR override set but no .git found there"
+        return 1
+    fi
+
     local candidates=(
         "$TERMUX_HOME/$PROJECT_NAME"
         "$UBUNTU_HOME/projects/$PROJECT_NAME"
     )
-    
+
     for dir in "${candidates[@]}"; do
         log "DEBUG: Checking $dir"
         if [ -d "$dir/.git" ]; then
@@ -114,23 +135,18 @@ find_project_dir() {
             return 0
         fi
     done
-    
-    # Fallback to hardcoded
-    local fallback="$UBUNTU_HOME/projects/$PROJECT_NAME"
-    log "DEBUG: Checking fallback $fallback"
-    if [ -d "$fallback/.git" ]; then
-        log "DEBUG: Found .git at fallback $fallback"
-        echo "$fallback"
-        return 0
-    fi
-    
+
     log "DEBUG: No .git found in any candidate"
     return 1
 }
 
 # Capture output and check return code in one call
 PROJECT_DIR_HOST=$(find_project_dir) || {
-    die "Project directory not found. Expected: ~/OllamaAiderAndroid or ~/ubuntu-home/projects/OllamaAiderAndroid"
+    if [ -n "${PROJECT_DIR:-}" ]; then
+        die "Project directory not found at PROJECT_DIR=$PROJECT_DIR (no .git there)"
+    else
+        die "Project directory not found. Expected: ~/$PROJECT_NAME or ~/ubuntu-home/projects/$PROJECT_NAME (set PROJECT_DIR in ~/.ai-env.conf to override)"
+    fi
 }
 log "Project directory found: $PROJECT_DIR_HOST"
 
@@ -203,7 +219,7 @@ pkg upgrade -y || {
 log ""
 log "===== Checking proot Ubuntu environment ($UBUNTU_DISTRO_NAME) ====="
 
-if ! proot-distro list 2>/dev/null | grep -q "^$UBUNTU_DISTRO_NAME\s"; then
+if [ ! -d "$UBUNTU_ROOTFS" ]; then
     log "Ubuntu not found - installing proot-distro + $UBUNTU_DISTRO_NAME..."
     pkg install proot-distro -y
     proot-distro install "$UBUNTU_DISTRO_NAME"
