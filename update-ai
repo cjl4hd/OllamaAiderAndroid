@@ -191,6 +191,7 @@ run_in_ubuntu_safe() {
 # 1. Git Pull (on Host)
 # =============================================================================
 
+# TODO: Update this to detect if project is in ubuntu or termux, then run the pull command accordingly
 log ""
 log "===== Pulling latest from git (host) ====="
 cd "$PROJECT_DIR_HOST"
