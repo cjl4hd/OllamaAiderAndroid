@@ -276,10 +276,11 @@ ln -sfn "$TERMUX_HOME" "$UBUNTU_HOME/termux-home"
 ln -sfn "$ANDROID_HOME" "$UBUNTU_HOME/android-home"
 
 # Bin links for update-ai / doctor-ai
-chmod +x "$PROJECT_DIR_HOST/code" "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai"
+chmod +x "$PROJECT_DIR_HOST/ubuntu" "$PROJECT_DIR_HOST/code" "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai"
 ln -sfn "$PROJECT_DIR_HOST/code" "$BIN_DIR/code"
 ln -sfn "$PROJECT_DIR_HOST/update-ai" "$BIN_DIR/update-ai"
 ln -sfn "$PROJECT_DIR_HOST/doctor-ai" "$BIN_DIR/doctor-ai"
+ln -sfn "$PROJECT_DIR_HOST/ubuntu" "$BIN_DIR/ubuntu"
 
 log "Symlinks updated"
 
