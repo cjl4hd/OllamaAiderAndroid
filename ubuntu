@@ -1,1 +1,2 @@
+echo "Loading ubuntu proot environment..."
 proot-distro login ubuntu
