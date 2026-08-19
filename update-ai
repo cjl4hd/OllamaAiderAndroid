@@ -195,6 +195,18 @@ run_in_ubuntu_safe() {
     fi
 }
 
+# The opencode installer drops the binary at ~/.opencode/bin/opencode and only
+# adds it to PATH via .bashrc, which is NOT sourced in non-interactive
+# 'bash -lc' shells, so 'command -v opencode' alone never finds it. Check the
+# fallback path too. Uses exit status only (no command substitution) to avoid
+# piping proot's stdio, which triggers spurious "can't sanitize binding"
+# warnings.
+opencode_installed() {
+    run_in_ubuntu '
+        command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]
+    ' >/dev/null 2>&1
+}
+
 set_conf() {
     local key="$1"
     local val="$2"
@@ -305,7 +317,7 @@ PROJECT_NAME=$PROJECT_NAME
 EOF
 fi
 
-if [ ! -L "$TERMUX_HOME/storage" ]; then
+if [ ! -d "$TERMUX_HOME/storage" ]; then
     log "Termux shared storage access is not set up (needed for GGUF imports)."
     if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
         read -p "Run 'termux-setup-storage' now? (Android will ask for permission) [Y/n] " ans
@@ -314,7 +326,7 @@ if [ ! -L "$TERMUX_HOME/storage" ]; then
             *)
                 termux-setup-storage
                 sleep 2
-                [ -L "$TERMUX_HOME/storage" ] || err "Storage permission not granted - imports will not work"
+                [ -d "$TERMUX_HOME/storage" ] || err "Storage permission not granted - imports will not work"
                 ;;
         esac
     else
@@ -381,9 +393,15 @@ fi
 log ""
 log "===== OpenCode (inside Ubuntu) ====="
 
-if run_in_ubuntu "command -v opencode" >/dev/null 2>&1; then
+if opencode_installed; then
     log "OpenCode found - upgrading..."
-    run_in_ubuntu_safe "opencode upgrade" "OpenCode upgrade"
+    run_in_ubuntu_safe "
+        if command -v opencode >/dev/null 2>&1; then
+            opencode upgrade
+        else
+            \"\$HOME/.opencode/bin/opencode\" upgrade
+        fi
+    " "OpenCode upgrade"
 elif [ "${OPENCODE:-ask}" = "no" ]; then
     log "OpenCode not installed (install disabled in $CONFIG_FILE)"
 elif [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
@@ -442,7 +460,13 @@ log ""
 log "===== Versions ====="
 log "Ollama: $(ollama --version 2>/dev/null || echo 'not installed')"
 log "Aider:  $(run_in_ubuntu 'aider --version' 2>/dev/null || echo 'not installed')"
-log "OpenCode: $(run_in_ubuntu 'opencode --version' 2>/dev/null || echo 'not installed')"
+log "OpenCode: $(run_in_ubuntu '
+    if command -v opencode >/dev/null 2>&1; then
+        opencode --version
+    else
+        "$HOME/.opencode/bin/opencode" --version
+    fi
+' 2>/dev/null || echo 'not installed')"
 run_in_ubuntu 'echo "Ubuntu:"; . /etc/os-release; echo "$PRETTY_NAME"' 2>/dev/null || log "Ubuntu: version unknown"
 
 log ""

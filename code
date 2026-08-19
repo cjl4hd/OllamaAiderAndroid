@@ -19,7 +19,7 @@ TARGET_DIR="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/r
 
 mkdir -p "$CONFIG_DIR"
 
-[ -L "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
+[ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
 #Parameters to optimize for S26
 #Force flahs attention, mandatory to unlock kv cache quantization
@@ -98,12 +98,12 @@ ollama run "$MODEL"
 }
 
 opencode_launch(){
-if ! proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1; then
+if ! proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1; then
  echo "OpenCode is not installed - run 'update-ai' to install it"
  exit 1
 fi
 select_project
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && opencode"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && { command -v opencode >/dev/null 2>&1 && opencode || \$HOME/.opencode/bin/opencode; }"
 }
 
 import_model(){

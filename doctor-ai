@@ -20,8 +20,6 @@ echo
 echo "AI Environment Doctor"
 echo "====================="
 echo
-echo "Work in progress. Model detection fails."
-echo "Ollama API fails"
 
 command -v ollama >/dev/null \
     && pass "Ollama installed" \
@@ -31,7 +29,7 @@ proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v aider' >/dev/nu
     && pass "Aider installed" \
     || fail "Aider missing"
 
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1 \
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1 \
     && pass "OpenCode installed" \
     || fail "OpenCode missing"
 
@@ -47,9 +45,11 @@ pgrep -f "ollama serve" >/dev/null \
     && pass "Ollama server running" \
     || fail "Ollama server not running"
 
-ollama list | grep -q "qwen-coder-7b" \
-    && pass "qwen-coder-7b installed" \
-    || fail "Model missing"
+if [ "$(ollama list 2>/dev/null | awk 'NR>1' | wc -l)" -gt 0 ]; then
+    pass "Models installed ($(ollama list 2>/dev/null | awk 'NR>1' | wc -l))"
+else
+    fail "No models installed (use 'code' > 2) Import GGUF)"
+fi
 
 curl -s http://127.0.0.1:11434/api/tags >/dev/null \
     && pass "Ollama API reachable" \
@@ -61,8 +61,8 @@ echo "--------"
 
 ollama --version
 proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'aider --version'
-if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1; then
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'opencode --version'
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1; then
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'if command -v opencode >/dev/null 2>&1; then opencode --version; else "$HOME/.opencode/bin/opencode" --version; fi'
 else
     echo "opencode: not installed"
 fi
