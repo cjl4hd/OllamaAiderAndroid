@@ -58,8 +58,29 @@ confirm() {
     esac
 }
 
+# Detect if we're already running inside the proot Ubuntu container.
+# Walks the parent process chain looking for this container's proot rootfs,
+# so nested proot-distro logins (which fail) are avoided.
+inside_ubuntu() {
+    local p="$PPID"
+    local i cmdline
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        [ -z "$p" ] || [ "$p" = "1" ] && break
+        cmdline=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+        if printf '%s' "$cmdline" | grep -q -- "--rootfs=.*/containers/$UBUNTU_DISTRO_NAME/rootfs"; then
+            return 0
+        fi
+        p=$(awk '/^PPid:/{print $2}' "/proc/$p/status" 2>/dev/null)
+    done
+    return 1
+}
+
 run_in_ubuntu() {
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1"
+    if inside_ubuntu; then
+        bash -lc "$1"
+    else
+        proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1"
+    fi
 }
 
 # =============================================================================
