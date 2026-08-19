@@ -1,12 +1,25 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
+CONFIG_FILE="$HOME/.ai-env.conf"
+if [ ! -f "$CONFIG_FILE" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    echo "No $CONFIG_FILE found - running first-time setup via update-ai..."
+    "$SCRIPT_DIR/update-ai" || exit 1
+    [ -f "$CONFIG_FILE" ] || { echo "Setup did not complete - $CONFIG_FILE not created. Run 'update-ai' manually."; exit 1; }
+fi
+source "$CONFIG_FILE"
+
+UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
+GGUF_DIR="${GGUF_DIR:-$HOME/storage/shared/Models}"
+
 CONFIG_DIR="$HOME/.config/code"
 LAST_FILE="$CONFIG_DIR/last_model"
-GGUF_DIR="$HOME/storage/shared/Models"
-TARGET_DIR="/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubuntu/rootfs/root/projects"
+TARGET_DIR="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/projects"
 
 mkdir -p "$CONFIG_DIR"
+
+[ -L "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
 #Parameters to optimize for S26
 #Force flahs attention, mandatory to unlock kv cache quantization
@@ -16,7 +29,7 @@ export OLLAMA_FLASH_ATTENTION=1
 export OLLAMA_KV_CACHE_TYPE=q8_0
 
 #Ensure only 1 model used at a time
-OLLAMA_MAX_LOADED_MODELS=1
+export OLLAMA_MAX_LOADED_MODELS=1
 
 # num_ctx 4096, num_predict 4096, num_thread 4, temperature 0.5 are model options, require 
 #ollama create <model> -f ./Modelfile
@@ -35,7 +48,11 @@ LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
 echo "====================================="
 echo " AI Development Environment"
 echo "====================================="
-echo "Ollama : Running"
+if pgrep -f "ollama serve" >/dev/null; then
+ echo "Ollama : Running"
+else
+ echo "Ollama : Stopped"
+fi
 echo "Models  : $COUNT"
 echo "Last    : $LAST"
 echo
@@ -59,7 +76,12 @@ echo "$MODEL" > "$LAST_FILE"
 
 select_project(){
 echo "Projects:"
-select dir in "$TARGET_DIR"/*/; do
+local dirs=("$TARGET_DIR"/*/)
+if [ ${#dirs[@]} -eq 0 ] || [ ! -d "${dirs[0]}" ]; then
+ echo "No projects found in $TARGET_DIR"
+ exit 1
+fi
+select dir in "${dirs[@]}"; do
  [ -n "$dir" ] && { PROJECT_NAME=$(basename "${dir%/}"); break; }
 done
 }
@@ -67,7 +89,7 @@ done
 launch(){
 select_model
 select_project
-proot-distro login ubuntu -- bash -lc "cd projects/$PROJECT_NAME && aider --model ollama_chat/$MODEL"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && aider --model ollama_chat/$MODEL"
 }
 
 chat(){
@@ -76,12 +98,21 @@ ollama run "$MODEL"
 }
 
 import_model(){
-mapfile -t G < <(find "$GGUF_DIR" -maxdepth 1 -name "*.gguf"|sort)
+[ -d "$GGUF_DIR" ] || { echo "Models directory not found: $GGUF_DIR"; exit 1; }
+while true; do
+ mapfile -t G < <(find "$GGUF_DIR" -maxdepth 1 -name "*.gguf"|sort)
+ [ ${#G[@]} -gt 0 ] && break
+ echo "No .gguf files found in $GGUF_DIR."
+ read -p "Add .gguf files there, then press Enter to retry (q to quit): " r
+ case "$r" in
+  [Qq]*) exit 1 ;;
+ esac
+done
 echo "GGUF files:"
 select f in "${G[@]}"; do [ -n "$f" ] && break; done
 read -p "Model name: " N
 TMP=$(mktemp)
-echo "FROM $f" > "$TMP"
+echo "FROM \"$f\"" > "$TMP"
 ollama create "$N" -f "$TMP"
 rm -f "$TMP"
 }

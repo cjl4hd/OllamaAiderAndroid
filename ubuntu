@@ -1,2 +1,3 @@
+#!/data/data/com.termux/files/usr/bin/bash
 echo "Loading ubuntu proot environment..."
 proot-distro login ubuntu

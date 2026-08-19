@@ -38,6 +38,8 @@ Environment (via ~/.ai-env.conf):
   PROJECT_NAME         Git project directory name (default: OllamaAiderAndroid)
   PROJECT_DIR          Absolute path to project dir, overrides auto-detection
                         (use this if your clone isn't in one of the usual spots)
+  GGUF_DIR             Directory for .gguf model imports
+                        (default: /storage/emulated/0/Models)
 EOF
     exit 0
 }
@@ -68,7 +70,7 @@ if [ -n "${PROOT_DISTRO:-}" ] || [ ! -d "/data/data/com.termux" ]; then
 fi
 
 log "Running in Termux (host)"
-log "DEBUG: About to validate paths"
+vlog "DEBUG: About to validate paths"
 
 # =============================================================================
 # Dynamic Path Detection with Fallbacks
@@ -80,11 +82,12 @@ UBUNTU_ROOTFS="$TERMUX_PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAM
 UBUNTU_HOME="$UBUNTU_ROOTFS/root"
 ANDROID_HOME="/storage/emulated/0"
 BIN_DIR="$TERMUX_PREFIX/bin"
+GGUF_DIR="${GGUF_DIR:-$ANDROID_HOME/Models}"
 
 # Validate critical paths
-log "DEBUG: Validating TERMUX_PREFIX=$TERMUX_PREFIX"
+vlog "DEBUG: Validating TERMUX_PREFIX=$TERMUX_PREFIX"
 [ -d "$TERMUX_PREFIX" ] || die "Termux prefix not found: $TERMUX_PREFIX"
-log "DEBUG: Validating TERMUX_HOME=$TERMUX_HOME"
+vlog "DEBUG: Validating TERMUX_HOME=$TERMUX_HOME"
 [ -d "$TERMUX_HOME" ] || die "Termux home not found: $TERMUX_HOME"
 
 log "Paths validated: TERMUX_PREFIX=$TERMUX_PREFIX, TERMUX_HOME=$TERMUX_HOME"
@@ -94,7 +97,7 @@ log "Paths validated: TERMUX_PREFIX=$TERMUX_PREFIX, TERMUX_HOME=$TERMUX_HOME"
 [ -d "$UBUNTU_ROOTFS" ] || log "Note: Ubuntu rootfs not found yet at $UBUNTU_ROOTFS (will be installed if needed)"
 [ -d "$ANDROID_HOME" ] || log "Warning: Android storage not found at $ANDROID_HOME (grant storage permission with 'termux-setup-storage' if symlinks fail)"
 
-log "DEBUG: About to find project dir"
+vlog "DEBUG: About to find project dir"
 
 vlog "TERMUX_PREFIX=$TERMUX_PREFIX"
 vlog "TERMUX_HOME=$TERMUX_HOME"
@@ -108,17 +111,17 @@ vlog "BIN_DIR=$BIN_DIR"
 # =============================================================================
 
 find_project_dir() {
-    log "DEBUG: find_project_dir called"
+    vlog "DEBUG: find_project_dir called"
 
     # Explicit override always wins, for clones that live outside the usual spots
     if [ -n "${PROJECT_DIR:-}" ]; then
-        log "DEBUG: PROJECT_DIR override set, checking $PROJECT_DIR"
+        vlog "DEBUG: PROJECT_DIR override set, checking $PROJECT_DIR"
         if [ -d "$PROJECT_DIR/.git" ]; then
-            log "DEBUG: Found .git at override $PROJECT_DIR"
+            vlog "DEBUG: Found .git at override $PROJECT_DIR"
             echo "$PROJECT_DIR"
             return 0
         fi
-        log "DEBUG: PROJECT_DIR override set but no .git found there"
+        vlog "DEBUG: PROJECT_DIR override set but no .git found there"
         return 1
     fi
 
@@ -128,15 +131,15 @@ find_project_dir() {
     )
 
     for dir in "${candidates[@]}"; do
-        log "DEBUG: Checking $dir"
+        vlog "DEBUG: Checking $dir"
         if [ -d "$dir/.git" ]; then
-            log "DEBUG: Found .git at $dir"
+            vlog "DEBUG: Found .git at $dir"
             echo "$dir"
             return 0
         fi
     done
 
-    log "DEBUG: No .git found in any candidate"
+    vlog "DEBUG: No .git found in any candidate"
     return 1
 }
 
@@ -154,13 +157,14 @@ log "Project directory found: $PROJECT_DIR_HOST"
 # Confirmation
 # =============================================================================
 
-if [ "$FORCE" = false ]; then
+if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
     cat <<EOF
 This will:
   • Pull latest project files (git)
   • Install or update the Ubuntu proot environment ($UBUNTU_DISTRO_NAME)
   • Update Termux packages
   • Set up / update the Python env (Python $PYTHON_VERSION), Ollama, and Aider
+  • Set up shared storage access and the models directory ($GGUF_DIR)
   • Refresh symlinks (Termux home, Ubuntu home, bin path)
 
 EOF
@@ -183,22 +187,33 @@ run_in_ubuntu_safe() {
     local desc="${2:-command}"
     if ! run_in_ubuntu "$cmd"; then
         err "$desc failed, attempting recovery..."
-        run_in_ubuntu "apt --fix-broken install -y && $cmd" || die "$desc failed after recovery"
+        run_in_ubuntu "DEBIAN_FRONTEND=noninteractive apt --fix-broken install -y" || die "Package fix failed for $desc"
+        run_in_ubuntu "$cmd" || die "$desc failed after recovery"
     fi
 }
 
 # =============================================================================
-# 1. Git Pull (on Host)
+# 1. Git Pull
 # =============================================================================
 
-# TODO: Update this to detect if project is in ubuntu or termux, then run the pull command accordingly
 log ""
-log "===== Pulling latest from git (host) ====="
-cd "$PROJECT_DIR_HOST"
-if git pull; then
-    log "Git pull successful"
+log "===== Pulling latest from git ====="
+
+if [[ "$PROJECT_DIR_HOST" == "$UBUNTU_ROOTFS"* ]]; then
+    log "Repo lives inside proot Ubuntu - pulling via $UBUNTU_DISTRO_NAME"
+    IN_UBUNTU_DIR="${PROJECT_DIR_HOST#$UBUNTU_ROOTFS}"
+    if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd '$IN_UBUNTU_DIR' && git pull"; then
+        log "Git pull successful"
+    else
+        err "Git pull failed (continuing anyway)"
+    fi
 else
-    err "Git pull failed (continuing anyway)"
+    cd "$PROJECT_DIR_HOST"
+    if git pull; then
+        log "Git pull successful"
+    else
+        err "Git pull failed (continuing anyway)"
+    fi
 fi
 
 # =============================================================================
@@ -210,7 +225,7 @@ log "===== Updating Termux packages ====="
 pkg update
 pkg upgrade -y || {
     err "pkg upgrade failed, attempting fix..."
-    pkg install -f $(pkg list-installed | cut -d'/' -f1) || die "Termux package recovery failed"
+    pkg install -f || die "Termux package recovery failed"
 }
 
 # =============================================================================
@@ -254,12 +269,99 @@ if ! run_in_ubuntu "command -v aider" >/dev/null 2>&1; then
 else
     log "Aider found - upgrading..."
     run_in_ubuntu_safe "
-        uv tool upgrade --python python$PYTHON_VERSION aider-chat
+        uv tool upgrade --python $PYTHON_VERSION aider-chat
     " "Aider upgrade"
 fi
 
 # =============================================================================
-# 5. Symlinks
+# 5. Shared Storage & Models
+# =============================================================================
+
+log ""
+log "===== Shared storage & models ====="
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    log "Creating default config: $CONFIG_FILE"
+    cat > "$CONFIG_FILE" <<EOF
+# AI environment config (sourced by update-ai, code, doctor-ai)
+PYTHON_VERSION=$PYTHON_VERSION
+UBUNTU_DISTRO_NAME=$UBUNTU_DISTRO_NAME
+PROJECT_NAME=$PROJECT_NAME
+# GGUF_DIR=/storage/emulated/0/Models
+EOF
+fi
+
+if [ ! -L "$TERMUX_HOME/storage" ]; then
+    log "Termux shared storage access is not set up (needed for GGUF imports)."
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        read -p "Run 'termux-setup-storage' now? (Android will ask for permission) [Y/n] " ans
+        case "$ans" in
+            [Nn]*) err "Skipped - run 'termux-setup-storage' later to enable GGUF imports" ;;
+            *)
+                termux-setup-storage
+                sleep 2
+                [ -L "$TERMUX_HOME/storage" ] || err "Storage permission not granted - imports will not work"
+                ;;
+        esac
+    else
+        err "Run 'termux-setup-storage' (Android will prompt for permission), then re-run"
+    fi
+else
+    log "Shared storage access OK"
+fi
+
+if [ ! -d "$GGUF_DIR" ]; then
+    log "Models directory not found: $GGUF_DIR"
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        read -p "Create $GGUF_DIR now? [Y/n] " ans
+        case "$ans" in
+            [Nn]*) err "Skipped - create it later and place .gguf files there" ;;
+            *)
+                mkdir -p "$GGUF_DIR" 2>/dev/null && log "Created $GGUF_DIR" \
+                    || err "Could not create $GGUF_DIR (is storage permission granted?)"
+                ;;
+        esac
+    else
+        mkdir -p "$GGUF_DIR" 2>/dev/null || err "Could not create $GGUF_DIR (is storage permission granted?)"
+    fi
+fi
+
+if [ -d "$GGUF_DIR" ] && [ -z "$(ls -A "$GGUF_DIR" 2>/dev/null)" ]; then
+    log "Models directory is empty: $GGUF_DIR"
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        read -p "Add .gguf files there, then press Enter (or n to skip): " ans
+        case "$ans" in
+            [Nn]*) log "Skipped - import models later via 'code' > 2) Import GGUF" ;;
+            *)
+                if [ -n "$(ls -A "$GGUF_DIR" 2>/dev/null)" ]; then
+                    log "Models detected: $GGUF_DIR"
+                else
+                    log "Still empty - import models later via 'code' > 2) Import GGUF"
+                fi
+                ;;
+        esac
+    else
+        log "Place .gguf model files there and import them via 'code'"
+    fi
+fi
+
+# =============================================================================
+# 6. Ollama (on Host)
+# =============================================================================
+
+log ""
+log "===== Ollama ====="
+
+if ! command -v ollama >/dev/null 2>&1; then
+    log "Ollama not found - installing..."
+    pkg install ollama -y
+else
+    log "Ollama found - checking for updates..."
+    pkg upgrade ollama -y
+fi
+
+# =============================================================================
+# 7. Symlinks
 # =============================================================================
 
 log ""
@@ -286,14 +388,14 @@ ln -sfn "$PROJECT_DIR_HOST/ubuntu" "$BIN_DIR/ubuntu"
 log "Symlinks updated"
 
 # =============================================================================
-# 6. Version Summary
+# 8. Version Summary
 # =============================================================================
 
 log ""
 log "===== Versions ====="
 log "Ollama: $(ollama --version 2>/dev/null || echo 'not installed')"
 log "Aider:  $(run_in_ubuntu 'aider --version' 2>/dev/null || echo 'not installed')"
-run_in_ubuntu 'echo "Ubuntu:"; lsb_release -d' 2>/dev/null || log "Ubuntu: version unknown"
+run_in_ubuntu 'echo "Ubuntu:"; . /etc/os-release; echo "$PRETTY_NAME"' 2>/dev/null || log "Ubuntu: version unknown"
 
 log ""
 log "✔ Update complete."
