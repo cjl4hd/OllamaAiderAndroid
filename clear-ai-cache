@@ -1,0 +1,177 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# =============================================================================
+# AI Environment Cache Cleaner
+# Runs in Termux (host), shells into proot-distro Ubuntu for Ubuntu-side caches
+# =============================================================================
+
+CONFIG_FILE="$HOME/.ai-env.conf"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
+
+SHOW=true
+FORCE=false
+QUIET=false
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Clears caches and frees space used by the AI environment (Ollama, Aider, OpenCode, uv, pip).
+Cache sizes are shown by default; use --no-show to skip the size report.
+
+Options:
+  -n, --no-show     Hide the cache size report (sizes are shown by default)
+  -f, --force       Skip all confirmation prompts
+  -q, --quiet       Suppress non-error output
+  -h, --help        Show this help
+
+What gets cleared:
+  Tier 1 (safe, auto-recreated): uv cache, pip cache, opencode cache,
+      aider caches, per-project tag caches, pipx cache, apt cache
+  Tier 2 (prompted): opencode session history, aider chat history,
+      installed Ollama models
+EOF
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -n|--no-show) SHOW=false; shift ;;
+        -f|--force) FORCE=true; shift ;;
+        -q|--quiet) QUIET=true; shift ;;
+        -h|--help) usage ;;
+        *) echo "ERROR: Unknown option: $1" >&2; exit 1 ;;
+    esac
+done
+
+log() { [ "$QUIET" = false ] && echo "$*" >&2; return 0; }
+err() { echo "ERROR: $*" >&2; }
+
+confirm() {
+    local prompt="$1"
+    [ "$FORCE" = true ] && return 0
+    read -p "$prompt [y/N] " ans
+    case "$ans" in
+        [Yy]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+run_in_ubuntu() {
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1"
+}
+
+# =============================================================================
+# Size reporting
+# =============================================================================
+
+report_sizes() {
+    log ""
+    log "===== Cache size report ====="
+
+    run_in_ubuntu '
+        echo "--- Tier 1 (safe, auto-recreated) ---"
+        du -sh "$HOME/.cache/uv" 2>/dev/null && echo "   (uv download cache - wiped by \`uv cache clean\`)"
+        du -sh "$HOME/.cache/uv/"* 2>/dev/null | sort -rh | sed "s/^/   /"
+        du -sh "$HOME/.cache/pip" 2>/dev/null && echo "   (pip download cache)"
+        du -sh "$HOME/.cache/opencode" 2>/dev/null && echo "   (opencode cache - bin, models.json)"
+        du -sh "$HOME/.cache/opencode/"* 2>/dev/null | sort -rh | sed "s/^/   /"
+        du -sh "$HOME/.aider/caches" 2>/dev/null && echo "   (aider cache)"
+        find "$HOME/projects" -maxdepth 2 -name ".aider.tags.cache.v4" -exec du -sk {} + 2>/dev/null | awk "{s+=\$1} END {if (s) print s\"K\tper-project aider tag caches\"}"
+        du -sh "$HOME/.cache/pipx" 2>/dev/null && echo "   (pipx cache)"
+
+        echo "--- Tier 2 (destructive, prompted) ---"
+        du -sh "$HOME/.local/share/opencode" 2>/dev/null && echo "   (opencode session history - DB, snapshots, logs)"
+        du -sh "$HOME/.local/share/opencode/"* 2>/dev/null | sort -rh | sed "s/^/   /"
+        echo "   Aider chat history per project:"
+        find "$HOME/projects" -maxdepth 2 \( -name ".aider.chat.history.md" -o -name ".aider.input.history" \) -exec du -sk {} + 2>/dev/null | awk "{s+=\$1} END {if (s) print s\"K\ttotal\"}"
+        find "$HOME/projects" -maxdepth 2 \( -name ".aider.chat.history.md" -o -name ".aider.input.history" \) -exec du -sh {} + 2>/dev/null | awk -v h="$HOME" "{sub(h,\"~\"); print \"   \" \$0}"
+    ' 2>/dev/null || log "Warning: could not measure Ubuntu caches"
+
+    log "--- Tier 2: Ollama models (host) ---"
+    if command -v ollama >/dev/null 2>&1; then
+        ollama list 2>/dev/null | awk 'NR>1{printf "   %-8s %s\n", $3, $1}' | sort -rh || true
+        ollama list 2>/dev/null | awk 'NR>1{s+=$3} END{if(s) printf "   Total model size: %.1fG\n", s}'
+    else
+        log "   ollama not installed"
+    fi
+    log ""
+}
+
+[ "$SHOW" = true ] && report_sizes
+
+# =============================================================================
+# Tier 1: Safe caches (auto-recreated)
+# =============================================================================
+
+log ""
+log "===== Tier 1: Clearing safe caches ====="
+
+if ! confirm "Clear safe caches (uv, pip, opencode, aider, apt)?"; then
+    log "Tier 1 skipped."
+else
+    run_in_ubuntu '
+        set +e
+        echo "--- uv cache ---"
+        uv cache clean
+        echo "--- pip cache ---"
+        pip cache purge 2>/dev/null || rm -rf "$HOME/.cache/pip"
+        echo "--- opencode cache ---"
+        rm -rf "$HOME/.cache/opencode"
+        echo "--- aider caches ---"
+        rm -rf "$HOME/.aider/caches"
+        echo "--- per-project tag caches ---"
+        find "$HOME/projects" -maxdepth 2 -name ".aider.tags.cache.v4" -exec rm -rf {} +
+        echo "--- pipx cache ---"
+        rm -rf "$HOME/.cache/pipx"
+        echo "--- apt cache ---"
+        apt clean
+        apt autoremove --purge -y >/dev/null
+        echo "Done."
+    ' 2>/dev/null || err "One or more Tier 1 steps failed"
+fi
+
+# =============================================================================
+# Tier 2: Destructive (each prompted separately)
+# =============================================================================
+
+log ""
+log "===== Tier 2: Destructive cleanup ====="
+
+if confirm "Delete opencode session history (sessions, snapshots, logs)? This cannot be undone."; then
+    run_in_ubuntu 'rm -rf "$HOME/.local/share/opencode"' 2>/dev/null \
+        && log "Opencode session history cleared."
+fi
+
+if confirm "Delete aider chat history and input history for all projects? This cannot be undone."; then
+    run_in_ubuntu '
+        find "$HOME/projects" -maxdepth 2 \( -name ".aider.chat.history.md" -o -name ".aider.input.history" \) -exec rm -f {} +
+    ' 2>/dev/null && log "Aider chat history cleared."
+fi
+
+if command -v ollama >/dev/null 2>&1 && [ "$(ollama list 2>/dev/null | awk 'NR>1' | wc -l)" -gt 0 ]; then
+    if confirm "Remove installed Ollama models to free space? (keeps your last-used model)"; then
+        LAST_FILE="$HOME/.config/code/last_model"
+        LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "")
+        while read -r name size; do
+            [ -z "$name" ] && continue
+            if [ "$name" = "$LAST" ]; then
+                log "Keeping last-used model: $name ($size)"
+                continue
+            fi
+            if confirm "Remove model '$name' ($size)?"; then
+                ollama rm "$name" >/dev/null 2>&1 && log "Removed $name"
+            fi
+        done < <(ollama list 2>/dev/null | awk 'NR>1{print $1, $3}')
+    fi
+fi
+
+# =============================================================================
+# Summary
+# =============================================================================
+
+log ""
+log "===== Summary ====="
+[ "$SHOW" = true ] && report_sizes
+log "Cache cleanup complete."

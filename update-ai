@@ -26,6 +26,8 @@ Usage: $(basename "$0") [OPTIONS]
 
 Updates the Android AI development environment (Termux + proot Ubuntu + Ollama + Aider).
 
+Also installs the 'clear-ai-cache' command for freeing disk space used by caches.
+
 Options:
   -v, --verbose    Detailed output
   -q, --quiet      Suppress non-error output
@@ -169,6 +171,8 @@ This will:
   • Optionally install / update OpenCode (only if you choose to)
   • Set up shared storage access and the models directory ($GGUF_DIR)
   • Refresh symlinks (Termux home, Ubuntu home, bin path)
+
+  clear-ai-cache is linked to $BIN_DIR/clear-ai-cache for cache cleanup.
 
 EOF
     read -p "Continue? [Y/n] " ans
@@ -443,11 +447,12 @@ ln -sfn "$ANDROID_HOME" "$TERMUX_HOME/android-home"
 ln -sfn "$TERMUX_HOME" "$UBUNTU_HOME/termux-home"
 ln -sfn "$ANDROID_HOME" "$UBUNTU_HOME/android-home"
 
-# Bin links for update-ai / doctor-ai
-chmod +x "$PROJECT_DIR_HOST/ubuntu" "$PROJECT_DIR_HOST/code" "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai"
+# Bin links for update-ai / doctor-ai / clear-ai-cache
+chmod +x "$PROJECT_DIR_HOST/ubuntu" "$PROJECT_DIR_HOST/code" "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai" "$PROJECT_DIR_HOST/clear-ai-cache"
 ln -sfn "$PROJECT_DIR_HOST/code" "$BIN_DIR/code"
 ln -sfn "$PROJECT_DIR_HOST/update-ai" "$BIN_DIR/update-ai"
 ln -sfn "$PROJECT_DIR_HOST/doctor-ai" "$BIN_DIR/doctor-ai"
+ln -sfn "$PROJECT_DIR_HOST/clear-ai-cache" "$BIN_DIR/clear-ai-cache"
 ln -sfn "$PROJECT_DIR_HOST/ubuntu" "$BIN_DIR/ubuntu"
 
 log "Symlinks updated"

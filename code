@@ -137,7 +137,8 @@ echo "4) Update AI"
 echo "5) Doctor AI"
 echo "6) Restart Ollama"
 echo "7) OpenCode"
-echo "8) Quit"
+echo "8) Clear Cache"
+echo "9) Quit"
 read -p "Choice: " m
 case "$m" in
 1) launch;;
@@ -147,5 +148,6 @@ case "$m" in
 5) doctor-ai;;
 6) restart_ollama;;
 7) opencode_launch;;
+8) clear-ai-cache;;
 *) exit 0;;
 esac
