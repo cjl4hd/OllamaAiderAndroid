@@ -97,6 +97,15 @@ select_model
 ollama run "$MODEL"
 }
 
+opencode_launch(){
+if ! proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1; then
+ echo "OpenCode is not installed - run 'update-ai' to install it"
+ exit 1
+fi
+select_project
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && opencode"
+}
+
 import_model(){
 [ -d "$GGUF_DIR" ] || { echo "Models directory not found: $GGUF_DIR"; exit 1; }
 while true; do
@@ -127,7 +136,8 @@ echo "3) Chat"
 echo "4) Update AI"
 echo "5) Doctor AI"
 echo "6) Restart Ollama"
-echo "7) Quit"
+echo "7) OpenCode"
+echo "8) Quit"
 read -p "Choice: " m
 case "$m" in
 1) launch;;
@@ -136,5 +146,6 @@ case "$m" in
 4) update-ai;;
 5) doctor-ai;;
 6) restart_ollama;;
+7) opencode_launch;;
 *) exit 0;;
 esac

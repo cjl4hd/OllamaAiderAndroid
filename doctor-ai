@@ -1,5 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
+CONFIG_FILE="$HOME/.ai-env.conf"
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
+
 GREEN="\033[0;32m"
 RED="\033[0;31m"
 RESET="\033[0m"
@@ -16,22 +20,26 @@ echo
 echo "AI Environment Doctor"
 echo "====================="
 echo
-echo "Work in progress. Aider detection fails, ollama detection fails. Model detection fails."
+echo "Work in progress. Model detection fails."
 echo "Ollama API fails"
 
 command -v ollama >/dev/null \
     && pass "Ollama installed" \
     || fail "Ollama missing"
 
-command -v aider >/dev/null \
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v aider' >/dev/null 2>&1 \
     && pass "Aider installed" \
     || fail "Aider missing"
+
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1 \
+    && pass "OpenCode installed" \
+    || fail "OpenCode missing"
 
 command -v proot-distro >/dev/null \
     && pass "proot-distro installed" \
     || fail "proot-distro missing"
 
-proot-distro login ubuntu -- true >/dev/null 2>&1 \
+proot-distro login "$UBUNTU_DISTRO_NAME" -- true >/dev/null 2>&1 \
     && pass "Ubuntu launches" \
     || fail "Ubuntu failed"
 
@@ -52,7 +60,12 @@ echo "Versions"
 echo "--------"
 
 ollama --version
-aider --version
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'aider --version'
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode' >/dev/null 2>&1; then
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'opencode --version'
+else
+    echo "opencode: not installed"
+fi
 
 echo
 echo "Doctor finished."

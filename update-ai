@@ -40,6 +40,8 @@ Environment (via ~/.ai-env.conf):
                         (use this if your clone isn't in one of the usual spots)
   GGUF_DIR             Directory for .gguf model imports
                         (default: /storage/emulated/0/Models)
+  OPENCODE             OpenCode install preference: ask (prompt if not installed)
+                        or no (never install) (default: ask)
 EOF
     exit 0
 }
@@ -164,6 +166,7 @@ This will:
   • Install or update the Ubuntu proot environment ($UBUNTU_DISTRO_NAME)
   • Update Termux packages
   • Set up / update the Python env (Python $PYTHON_VERSION), Ollama, and Aider
+  • Optionally install / update OpenCode (only if you choose to)
   • Set up shared storage access and the models directory ($GGUF_DIR)
   • Refresh symlinks (Termux home, Ubuntu home, bin path)
 
@@ -189,6 +192,16 @@ run_in_ubuntu_safe() {
         err "$desc failed, attempting recovery..."
         run_in_ubuntu "DEBIAN_FRONTEND=noninteractive apt --fix-broken install -y" || die "Package fix failed for $desc"
         run_in_ubuntu "$cmd" || die "$desc failed after recovery"
+    fi
+}
+
+set_conf() {
+    local key="$1"
+    local val="$2"
+    if grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$CONFIG_FILE"
+    else
+        echo "${key}=${val}" >> "$CONFIG_FILE"
     fi
 }
 
@@ -288,6 +301,7 @@ PYTHON_VERSION=$PYTHON_VERSION
 UBUNTU_DISTRO_NAME=$UBUNTU_DISTRO_NAME
 PROJECT_NAME=$PROJECT_NAME
 # GGUF_DIR=/storage/emulated/0/Models
+# OPENCODE=ask
 EOF
 fi
 
@@ -361,7 +375,40 @@ else
 fi
 
 # =============================================================================
-# 7. Symlinks
+# 7. OpenCode (inside Ubuntu, optional)
+# =============================================================================
+
+log ""
+log "===== OpenCode (inside Ubuntu) ====="
+
+if run_in_ubuntu "command -v opencode" >/dev/null 2>&1; then
+    log "OpenCode found - upgrading..."
+    run_in_ubuntu_safe "opencode upgrade" "OpenCode upgrade"
+elif [ "${OPENCODE:-ask}" = "no" ]; then
+    log "OpenCode not installed (install disabled in $CONFIG_FILE)"
+elif [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
+    log "OpenCode not installed - skipping (run interactively to be asked)"
+else
+    read -p "OpenCode not installed. Install it now? [y]es / [n]o / [d]on't ask again: " ans
+    case "$ans" in
+        y|Y)
+            log "Installing OpenCode..."
+            run_in_ubuntu_safe "
+                curl -fsSL https://opencode.ai/install | bash
+                grep -q 'OPENCODE_DISABLE_AUTOUPDATE' ~/.bashrc 2>/dev/null || echo 'export OPENCODE_DISABLE_AUTOUPDATE=true' >> ~/.bashrc
+                ~/.opencode/bin/opencode --version
+            " "OpenCode install"
+            ;;
+        d|D)
+            set_conf "OPENCODE" "no"
+            log "Saved: will not ask about OpenCode again (edit $CONFIG_FILE to re-enable)"
+            ;;
+        *) log "Skipping OpenCode install" ;;
+    esac
+fi
+
+# =============================================================================
+# 8. Symlinks
 # =============================================================================
 
 log ""
@@ -388,13 +435,14 @@ ln -sfn "$PROJECT_DIR_HOST/ubuntu" "$BIN_DIR/ubuntu"
 log "Symlinks updated"
 
 # =============================================================================
-# 8. Version Summary
+# 9. Version Summary
 # =============================================================================
 
 log ""
 log "===== Versions ====="
 log "Ollama: $(ollama --version 2>/dev/null || echo 'not installed')"
 log "Aider:  $(run_in_ubuntu 'aider --version' 2>/dev/null || echo 'not installed')"
+log "OpenCode: $(run_in_ubuntu 'opencode --version' 2>/dev/null || echo 'not installed')"
 run_in_ubuntu 'echo "Ubuntu:"; . /etc/os-release; echo "$PRETTY_NAME"' 2>/dev/null || log "Ubuntu: version unknown"
 
 log ""
