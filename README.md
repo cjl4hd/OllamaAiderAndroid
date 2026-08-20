@@ -1,7 +1,7 @@
 # Android AI Development Environment
 
 This project is a set of scripts to install Ollama, proot distro Ubuntu, and Aider in an Android environment with minimal effort. Setup instructions:
-- mkdir -p projects
+- mkdir -p projects #or CD into an existing project directory
 - git clone git@github.com:cjl4hd/OllamaAiderAndroid.git
 - git pull
 - update-ai
