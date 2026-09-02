@@ -142,7 +142,8 @@ DEST="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/.c
 printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "http://127.0.0.1:11434/v1"\n      },\n      "models": {\n'
 for i in "${!MODELS[@]}"; do
  comma="," 
- [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""  printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$OUTPUT_CAP" "$comma"
+ [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
+ printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$OUTPUT_CAP" "$comma"
 done
 printf '      }\n    }\n  }\n}\n'
 } > "$DEST" 2>/dev/null || return 1
