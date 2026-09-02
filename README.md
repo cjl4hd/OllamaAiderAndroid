@@ -180,17 +180,21 @@ allow-always for trusted projects.
 Paths proven in review (logic verified, syntax-checked, config output
 JSON-validated) but **not yet run on device**:
 
-- **nvm PATH detection fix**: opencode/freebuff installed via nvm-installed npm
-  (`~/.nvm/versions/node/*/bin`) were invisible to `bash -lc` detection because
-  nvm's PATH line sits in `.bashrc` behind the interactive-shell guard. Scripts
-  now resolve via explicit candidate paths (`ubuntu_which` / `in_ubuntu_path`)
-  and prepend a PATH prefix when launching. Resolver logic mock-tested; live
-  proot execution not yet verified.
+- **nvm PATH detection fix — device-verified**: opencode/freebuff installed via
+  nvm-installed npm (`~/.nvm/versions/node/*/bin`) were invisible to `bash -lc`
+  detection; scripts now resolve via explicit candidate paths
+  (`ubuntu_which` / `in_ubuntu_path`). Detection confirmed working on device.
+- **Launch-string fix — device-verified root cause**: the first launch attempt
+  failed with `syntax error near unexpected token '}'` because the PATH prefix
+  (`export PATH=...`) was joined to the binary with a brace group that bash
+  cannot parse mid-command. Now joined with `&&`. Old form's failure reproduced
+  and new form's parse + exec verified in a stubbed harness; full on-device
+  launch still to confirm.
 - Freebuff install/update path in `update-ai` (assumes `apt install nodejs npm`
   works in proot Ubuntu; not yet exercised)
 - Freebuff launch from `code` (never launched on device)
-- OpenCode launch with `--model ollama/<name>` + generated provider config
-  (config format is per Ollama's official docs; end-to-end untested)
+- OpenCode launch with `--model ollama/<name>`: model picker + config generation
+  device-verified up to the launch call; agent session end-to-end still to confirm
 - `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
   script itself unrun)
 - Status banner `Loaded`/`Ctx` lines and menu options 9–10

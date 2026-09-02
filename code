@@ -185,7 +185,7 @@ else
 fi
 select_project
 PATH_PREFIX=$(ubuntu_path_prefix)
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX { '$OC' $MODEL_ARGS; }"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX && '$OC' $MODEL_ARGS"
 }
 
 freebuff_launch(){
@@ -196,7 +196,7 @@ if [ -z "$FB" ]; then
 fi
 select_project
 PATH_PREFIX=$(ubuntu_path_prefix)
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX '$FB'"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX && '$FB'"
 }
 
 import_model(){
