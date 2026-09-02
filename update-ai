@@ -190,7 +190,14 @@ fi
 # =============================================================================
 
 run_in_ubuntu() {
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1"
+    # nvm/node installers append PATH entries to ~/.bashrc after Ubuntu's
+    # interactive-only guard, so non-interactive 'bash -lc' shells don't see
+    # npm-installed CLIs (opencode, freebuff). Prepend the known install dirs
+    # so detection and npm both work regardless of rc-file ordering.
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "
+        export PATH=\"\$PATH:/root/.local/bin:/root/.opencode/bin\$(N=\$(ls -d /root/.nvm/versions/node/*/bin 2>/dev/null | tail -1); [ -n \"\$N\" ] && echo \":\$N\")\"
+        $1
+    "
 }
 
 run_in_ubuntu_safe() {

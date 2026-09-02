@@ -16,6 +16,19 @@ fail() {
     echo -e "${RED}✗${RESET} $1"
 }
 
+# Resolve a binary inside Ubuntu without relying on non-interactive PATH:
+# nvm/node installers append to ~/.bashrc after Ubuntu's interactive-only
+# guard, so 'bash -lc' shells never see npm-installed CLIs.
+in_ubuntu_path() {
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '
+        for c in "/usr/local/bin/$1" "/usr/bin/$1" "/root/.local/bin/$1" \
+                 "/root/.nvm/versions/node/"*/"bin/$1" "/root/.opencode/bin/$1"; do
+            [ -x "$c" ] && { echo "$c"; exit 0; }
+        done
+        exit 1
+    ' bash "$1" 2>/dev/null
+}
+
 echo
 echo "AI Environment Doctor"
 echo "====================="
@@ -29,11 +42,13 @@ proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v aider' >/dev/nu
     && pass "Aider installed" \
     || fail "Aider missing"
 
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1 \
+OC_BIN=$(in_ubuntu_path opencode)
+[ -n "$OC_BIN" ] \
     && pass "OpenCode installed" \
     || fail "OpenCode missing"
 
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1 \
+FB_BIN=$(in_ubuntu_path freebuff)
+[ -n "$FB_BIN" ] \
     && pass "Freebuff installed" \
     || fail "Freebuff missing (optional - run 'update-ai')"
 
@@ -77,14 +92,14 @@ echo "--------"
 
 ollama --version
 proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'aider --version'
-if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1; then
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'if command -v opencode >/dev/null 2>&1; then opencode --version; else "$HOME/.opencode/bin/opencode" --version; fi'
+if [ -n "$OC_BIN" ]; then
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "'$OC_BIN' --version"
 else
     echo "opencode: not installed"
 fi
 
-if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1; then
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'freebuff --version 2>/dev/null || echo "freebuff: installed (version unknown)"'
+if [ -n "$FB_BIN" ]; then
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "'$FB_BIN' --version 2>/dev/null || echo 'freebuff: installed (version unknown)'"
 else
     echo "freebuff: not installed"
 fi
