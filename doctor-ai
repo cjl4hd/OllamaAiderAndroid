@@ -37,6 +37,18 @@ command -v proot-distro >/dev/null \
     && pass "proot-distro installed" \
     || fail "proot-distro missing"
 
+command -v llama-cli >/dev/null \
+    && pass "llama-cli installed (bench.py)" \
+    || fail "llama-cli missing (needed for bench.py)"
+
+command -v llama-bench >/dev/null \
+    && pass "llama-bench installed (bench_all.py)" \
+    || fail "llama-bench missing (needed for bench_all.py)"
+
+command -v python3 >/dev/null \
+    && pass "python3 installed (bench scripts)" \
+    || fail "python3 missing (needed for bench scripts)"
+
 proot-distro login "$UBUNTU_DISTRO_NAME" -- true >/dev/null 2>&1 \
     && pass "Ubuntu launches" \
     || fail "Ubuntu failed"
