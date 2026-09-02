@@ -193,8 +193,13 @@ JSON-validated) but **not yet run on device**:
 - Freebuff install/update path in `update-ai` (assumes `apt install nodejs npm`
   works in proot Ubuntu; not yet exercised)
 - Freebuff launch from `code` (never launched on device)
-- OpenCode launch with `--model ollama/<name>`: model picker + config generation
-  device-verified up to the launch call; agent session end-to-end still to confirm
+- OpenCode launch: model picker, config generation, and launch call all
+  device-verified. Device testing caught a real bug: the generated config was
+  rejected by OpenCode's schema (`Missing key ...limit.output`) and the TUI died
+  silently on startup, which looked like a hang. The generator now emits
+  `limit.output` (capped at 4096) for every model. **After updating, regenerate
+  the cached config**: `code` → 10) Regen OpenCode Config → y. End-to-end agent
+  session still to confirm.
 - `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
   script itself unrun)
 - Status banner `Loaded`/`Ctx` lines and menu options 9–10
