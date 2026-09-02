@@ -1,1 +1,4 @@
+# Aider session artifacts
 .aider*
+!.aider.conf.yml
+!.aider.conventions.md
