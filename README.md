@@ -66,7 +66,9 @@ Android
    provider config on first run so installed Ollama models are selectable)
 8. Clear Cache (delegates to `clear-ai-cache`)
 9. Freebuff (project picker → freebuff inside Ubuntu; cloud models, no API key)
-10. Quit
+10. Regen OpenCode Config (overwrite the generated `opencode.json` from the
+    current `ollama list` — use after importing a new model)
+11. Quit
 
 ## Configuration
 

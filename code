@@ -50,6 +50,8 @@ fi
 status() {
 COUNT=$(ollama list | awk 'NR>1'|wc -l)
 LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
+LOADED=$(ollama ps 2>/dev/null | awk 'NR>1{print $1; exit}')
+[ -z "$LOADED" ] && LOADED="none"
 echo "====================================="
 echo " AI Development Environment"
 echo "====================================="
@@ -60,6 +62,8 @@ else
 fi
 echo "Models  : $COUNT"
 echo "Last    : $LAST"
+echo "Loaded  : $LOADED"
+echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
 echo
 }
 
@@ -102,14 +106,11 @@ select_model
 ollama run "$MODEL"
 }
 
-#Generate ~/.config/opencode/opencode.json inside Ubuntu from the installed
+#Write ~/.config/opencode/opencode.json inside Ubuntu from the installed
 #Ollama models (OpenAI-compatible provider), so OpenCode can select them via
-#--model ollama/<name>. Never overwrites an existing user config.
-#Returns 0 if a provider config is usable, non-zero otherwise.
-sync_opencode_config(){
-if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '[ -f "$HOME/.config/opencode/opencode.json" ]' >/dev/null 2>&1; then
- return 0
-fi
+#--model ollama/<name>. Always overwrites.
+#Returns 0 if the config was written, non-zero otherwise (no models / write failure).
+generate_opencode_config(){
 mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
 [ ${#MODELS[@]} -eq 0 ] && return 1
 proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'mkdir -p "$HOME/.config/opencode"'
@@ -125,6 +126,29 @@ printf '      }\n    }\n  }\n}\n'
 } > "$DEST" 2>/dev/null || return 1
 echo "Generated OpenCode Ollama provider config (.config/opencode/opencode.json in Ubuntu home)"
 return 0
+}
+
+#Like generate_opencode_config, but respects an existing user config.
+#Returns 0 if a provider config is usable, non-zero otherwise.
+sync_opencode_config(){
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '[ -f "$HOME/.config/opencode/opencode.json" ]' >/dev/null 2>&1; then
+ return 0
+fi
+generate_opencode_config
+}
+
+#Menu action: discard any existing OpenCode config and regenerate it from the
+#current Ollama model list (e.g. after importing a new model).
+regen_opencode_config(){
+DEST="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/.config/opencode/opencode.json"
+if [ -f "$DEST" ]; then
+ read -p "Overwrite existing .config/opencode/opencode.json in Ubuntu home? [y/N] " ans
+ case "$ans" in
+  [Yy]*) ;;
+  *) echo "Aborted."; return 1 ;;
+ esac
+fi
+generate_opencode_config || echo "No models to register - import one first ('code' > 2)"
 }
 
 opencode_launch(){
@@ -185,7 +209,8 @@ echo "6) Restart Ollama"
 echo "7) OpenCode"
 echo "8) Clear Cache"
 echo "9) Freebuff"
-echo "10) Quit"
+echo "10) Regen OpenCode Config"
+echo "11) Quit"
 read -p "Choice: " m
 case "$m" in
 1) launch;;
@@ -197,5 +222,6 @@ case "$m" in
 7) opencode_launch;;
 8) clear-ai-cache;;
 9) freebuff_launch;;
+10) regen_opencode_config;;
 *) exit 0;;
 esac
