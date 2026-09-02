@@ -44,6 +44,10 @@ Environment (via ~/.ai-env.conf):
                         (default: /storage/emulated/0/Models)
   OPENCODE             OpenCode install preference: ask (prompt if not installed)
                         or no (never install) (default: ask)
+  FREEBUFF             Freebuff install preference: ask (prompt if not installed)
+                        or no (never install) (default: ask)
+  OLLAMA_CONTEXT_LENGTH  Ollama default context window (default: 16384). OpenCode
+                        wants 64k+; lower it if RAM-constrained.
 EOF
     exit 0
 }
@@ -168,7 +172,7 @@ This will:
   • Install or update the Ubuntu proot environment ($UBUNTU_DISTRO_NAME)
   • Update Termux packages
   • Set up / update the Python env (Python $PYTHON_VERSION), Ollama, and Aider
-  • Optionally install / update OpenCode (only if you choose to)
+  • Optionally install / update OpenCode and Freebuff (only if you choose to)
   • Set up shared storage access and the models directory ($GGUF_DIR)
   • Refresh symlinks (Termux home, Ubuntu home, bin path)
 
@@ -318,6 +322,8 @@ UBUNTU_DISTRO_NAME=$UBUNTU_DISTRO_NAME
 PROJECT_NAME=$PROJECT_NAME
 # GGUF_DIR=/storage/emulated/0/Models
 # OPENCODE=ask
+# FREEBUFF=ask
+# OLLAMA_CONTEXT_LENGTH=16384
 EOF
 fi
 
@@ -429,6 +435,35 @@ else
     esac
 fi
 
+log ""
+log "===== Freebuff (inside Ubuntu) ====="
+
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1; then
+    log "Freebuff found - upgrading..."
+    run_in_ubuntu_safe "npm update -g freebuff" "Freebuff upgrade"
+elif [ "${FREEBUFF:-ask}" = "no" ]; then
+    log "Freebuff not installed (install disabled in $CONFIG_FILE)"
+elif [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
+    log "Freebuff not installed - skipping (run interactively to be asked)"
+else
+    read -p "Freebuff (free cloud-model coding agent, needs Node.js) not installed. Install now? [y]es / [n]o / [d]on't ask again: " ans
+    case "$ans" in
+        y|Y)
+            log "Installing Freebuff..."
+            run_in_ubuntu_safe "
+                command -v node >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt install -y nodejs npm
+                npm install -g freebuff
+                freebuff --help >/dev/null 2>&1 && echo "Freebuff installed"
+            " "Freebuff install"
+            ;;
+        d|D)
+            set_conf "FREEBUFF" "no"
+            log "Saved: will not ask about Freebuff again (edit $CONFIG_FILE to re-enable)"
+            ;;
+        *) log "Skipping Freebuff install" ;;
+    esac
+fi
+
 # =============================================================================
 # 8. Symlinks
 # =============================================================================
@@ -472,6 +507,7 @@ log "OpenCode: $(run_in_ubuntu '
         "$HOME/.opencode/bin/opencode" --version
     fi
 ' 2>/dev/null || echo 'not installed')"
+log "Freebuff: $(run_in_ubuntu 'command -v freebuff >/dev/null 2>&1 && freebuff --version 2>/dev/null || echo "not installed"' 2>/dev/null || echo 'not installed')"
 run_in_ubuntu 'echo "Ubuntu:"; . /etc/os-release; echo "$PRETTY_NAME"' 2>/dev/null || log "Ubuntu: version unknown"
 
 log ""

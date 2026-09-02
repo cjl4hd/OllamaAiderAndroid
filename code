@@ -31,6 +31,11 @@ export OLLAMA_KV_CACHE_TYPE=q8_0
 #Ensure only 1 model used at a time
 export OLLAMA_MAX_LOADED_MODELS=1
 
+#Default context window for requests that don't set num_ctx. OpenCode's agent
+#loop wants 64k+, but phone RAM with q8_0 KV cache realistically caps lower.
+#Override via OLLAMA_CONTEXT_LENGTH in ~/.ai-env.conf.
+export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
+
 # num_ctx 4096, num_predict 4096, num_thread 4, temperature 0.5 are model options, require 
 #ollama create <model> -f ./Modelfile
 
@@ -97,13 +102,54 @@ select_model
 ollama run "$MODEL"
 }
 
+#Generate ~/.config/opencode/opencode.json inside Ubuntu from the installed
+#Ollama models (OpenAI-compatible provider), so OpenCode can select them via
+#--model ollama/<name>. Never overwrites an existing user config.
+#Returns 0 if a provider config is usable, non-zero otherwise.
+sync_opencode_config(){
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '[ -f "$HOME/.config/opencode/opencode.json" ]' >/dev/null 2>&1; then
+ return 0
+fi
+mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
+[ ${#MODELS[@]} -eq 0 ] && return 1
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'mkdir -p "$HOME/.config/opencode"'
+DEST="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/.config/opencode/opencode.json"
+{
+printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "http://127.0.0.1:11434/v1"\n      },\n      "models": {\n'
+for i in "${!MODELS[@]}"; do
+ comma="," 
+ [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
+ printf '        "%s": {"name": "%s", "limit": {"context": %s}}%s\n' "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$comma"
+done
+printf '      }\n    }\n  }\n}\n'
+} > "$DEST" 2>/dev/null || return 1
+echo "Generated OpenCode Ollama provider config (.config/opencode/opencode.json in Ubuntu home)"
+return 0
+}
+
 opencode_launch(){
 if ! proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]' >/dev/null 2>&1; then
  echo "OpenCode is not installed - run 'update-ai' to install it"
  exit 1
 fi
+select_model
+MODEL_ARGS=""
+if sync_opencode_config; then
+ MODEL_ARGS="--model ollama/$MODEL"
+else
+ echo "Warning: no Ollama models found - OpenCode will use its default model"
+fi
 select_project
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && { command -v opencode >/dev/null 2>&1 && opencode || \$HOME/.opencode/bin/opencode; }"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && { command -v opencode >/dev/null 2>&1 && opencode $MODEL_ARGS || \$HOME/.opencode/bin/opencode $MODEL_ARGS; }"
+}
+
+freebuff_launch(){
+if ! proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1; then
+ echo "Freebuff is not installed - run 'update-ai' to install it"
+ exit 1
+fi
+select_project
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && freebuff"
 }
 
 import_model(){
@@ -138,7 +184,8 @@ echo "5) Doctor AI"
 echo "6) Restart Ollama"
 echo "7) OpenCode"
 echo "8) Clear Cache"
-echo "9) Quit"
+echo "9) Freebuff"
+echo "10) Quit"
 read -p "Choice: " m
 case "$m" in
 1) launch;;
@@ -149,5 +196,6 @@ case "$m" in
 6) restart_ollama;;
 7) opencode_launch;;
 8) clear-ai-cache;;
+9) freebuff_launch;;
 *) exit 0;;
 esac

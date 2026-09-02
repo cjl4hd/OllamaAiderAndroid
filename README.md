@@ -62,9 +62,11 @@ Android
 4. Update AI (delegates to `update-ai`)
 5. Doctor AI (delegates to `doctor-ai`)
 6. Restart Ollama
-7. OpenCode (project picker → opencode inside Ubuntu)
+7. OpenCode (project picker → opencode inside Ubuntu; generates an Ollama
+   provider config on first run so installed Ollama models are selectable)
 8. Clear Cache (delegates to `clear-ai-cache`)
-9. Quit
+9. Freebuff (project picker → freebuff inside Ubuntu; cloud models, no API key)
+10. Quit
 
 ## Configuration
 
@@ -79,6 +81,8 @@ Android
 | `PROJECT_DIR` | *(auto-detected)* | Absolute path override if the clone lives elsewhere |
 | `GGUF_DIR` | `/storage/emulated/0/Models` | Where `.gguf` model files are imported from |
 | `OPENCODE` | `ask` | `ask` (prompt if missing) or `no` (never install) |
+| `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
+| `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
 
 ### Flags
 

@@ -33,6 +33,10 @@ proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/dev/
     && pass "OpenCode installed" \
     || fail "OpenCode missing"
 
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1 \
+    && pass "Freebuff installed" \
+    || fail "Freebuff missing (optional - run 'update-ai')"
+
 command -v proot-distro >/dev/null \
     && pass "proot-distro installed" \
     || fail "proot-distro missing"
@@ -77,6 +81,12 @@ if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v opencode >/d
     proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'if command -v opencode >/dev/null 2>&1; then opencode --version; else "$HOME/.opencode/bin/opencode" --version; fi'
 else
     echo "opencode: not installed"
+fi
+
+if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v freebuff >/dev/null 2>&1' >/dev/null 2>&1; then
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'freebuff --version 2>/dev/null || echo "freebuff: installed (version unknown)"'
+else
+    echo "freebuff: not installed"
 fi
 
 echo
