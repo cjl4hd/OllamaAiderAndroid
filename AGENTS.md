@@ -16,8 +16,11 @@ nothing about the host beyond Termux + Android storage access.
   `~/.ai-env.conf`, installs/updates Ubuntu proot, Python/uv/Aider (in Ubuntu),
   Ollama (host), OpenCode (in Ubuntu, optional), storage symlinks, bin links.
 - `code` — interactive launcher. Model picker, project picker, GGUF import, chat,
-  delegates to update-ai / doctor-ai / clear-ai-cache. Sets Ollama env tuning
-  (flash attention, q8_0 KV cache, single loaded model) for phone-class hardware.
+  delegates to update-ai / doctor-ai / clear-ai-cache, launches OpenCode (with a
+  generated Ollama provider config + `--model ollama/<name>`, menu option 10
+  force-regenerates that config) and Freebuff. Sets Ollama env tuning (flash
+  attention, q8_0 KV cache, single loaded model, OLLAMA_CONTEXT_LENGTH) for
+  phone-class hardware.
 - `doctor-ai` — health checks and version report.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.

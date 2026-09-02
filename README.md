@@ -156,6 +156,42 @@ Models remain in:
   rules for 7B-class local models
 - `.aider.conventions.md` — aider's auto-loaded prompt guard
 
+## Using OpenCode with a local model
+
+1. `code` → pick model → **7) OpenCode** → pick project. The launcher generates
+   `~/.config/opencode/opencode.json` inside Ubuntu (Ollama provider, all
+   installed models) and starts OpenCode with your model preselected
+   (`--model ollama/<name>`).
+2. The provider talks to `http://127.0.0.1:11434/v1` — same loopback, since proot
+   shares Android's network stack. Verify with `ollama ps` in a second Termux
+   session while OpenCode generates.
+3. **Gotcha:** the generated config is never auto-overwritten. After importing a
+   new model, run `code` → **10) Regen OpenCode Config** (or delete
+   `~/ubuntu-home/.config/opencode/opencode.json`).
+
+In-app basics: `/init` once per project (writes `AGENTS.md`), `/models` to switch,
+`/compact` to reclaim context, `/new` for a fresh session, `Esc` to interrupt.
+At the default 16k context, `/compact` early — one file read plus conversation
+fills it fast. First edit/command triggers a permission prompt; choose
+allow-always for trusted projects.
+
+## Live-testing notes
+
+Paths proven in review (logic verified, syntax-checked, config output
+JSON-validated) but **not yet run on device**:
+
+- Freebuff install/update path in `update-ai` (assumes `apt install nodejs npm`
+  works in proot Ubuntu; not yet exercised)
+- Freebuff launch from `code` (never launched on device)
+- OpenCode launch with `--model ollama/<name>` + generated provider config
+  (config format is per Ollama's official docs; end-to-end untested)
+- `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
+  script itself unrun)
+- Status banner `Loaded`/`Ctx` lines and menu options 9–10
+
+If a fresh `update-ai` run on another phone stalls at the OpenCode/Freebuff
+prompts, that's the new ask-based install flow — `-f` skips prompts.
+
 ## Todo
 
 - Verify setup / update / run scripts on another phone
