@@ -19,8 +19,12 @@ nothing about the host beyond Termux + Android storage access.
   delegates to update-ai / doctor-ai / clear-ai-cache, launches OpenCode (with a
   generated Ollama provider config + `--model ollama/<name>`, menu option 10
   force-regenerates that config) and Freebuff. Sets Ollama env tuning (flash
-  attention, q8_0 KV cache, single loaded model, OLLAMA_CONTEXT_LENGTH) for
-  phone-class hardware.
+  attention, q8_0 KV cache, single loaded model, `OLLAMA_NUM_PARALLEL=1` —
+  Ollama's default of 4 multiplies KV-cache RAM 4x and alone can keep a 7b model
+  from loading on a 12 GB phone — and `OLLAMA_CONTEXT_LENGTH`) for phone-class
+  hardware. The generated OpenCode config must include `limit.output` for every
+  model: OpenCode's schema requires it, and a schema-invalid config kills the
+  TUI silently at startup (no error, no render).
 - `doctor-ai` — health checks and version report.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.
@@ -72,6 +76,16 @@ nothing about the host beyond Termux + Android storage access.
    never `git add -A`. No credentials, tokens, chat history, or device-identifying
    paths in anything committed (check `termux_home/**/.config/**` and history files
    especially).
+9. **Non-interactive proot shells hide PATH and punish PATH injection.**
+   `bash -lc` never sources rc-file PATH additions (nvm installs append to
+   `.bashrc` behind Ubuntu's interactive-only guard), so resolve binaries via
+   explicit candidate paths (`ubuntu_which` in `code`, `in_ubuntu_path` in
+   `doctor-ai`) — never `command -v`. Launch TUI apps by absolute path **without**
+   extending PATH in the launch string: an `export PATH=...` prefix wedged
+   opencode's startup on device (bisect-verified: cd + absolute-path binary
+   renders; PATH-export + binary hangs). `update-ai`'s `run_in_ubuntu` may still
+   export PATH — its commands are non-interactive one-shots, where the prefix is
+   proven harmless.
 
 ## Conventions
 
@@ -87,3 +101,12 @@ nothing about the host beyond Termux + Android storage access.
 No test suite. Verify by running `bash -n <script>` for syntax, and on-device:
 `doctor-ai` (checks installs + API reachability), then the flow you changed in a
 fresh proot container if it's installer logic.
+
+`bash -n` is necessary but not sufficient — it cannot catch logic corruption (a
+merged-line edit once passed syntax while silently breaking a generator loop) or
+schema rejection (a generated config was syntactically fine bash but failed the
+consumer tool's validation). For functions that write files or assemble command
+strings: execute the real function with stubbed dependencies and validate its
+actual output. For on-device hangs, bisect the ingredients (cd / PATH / binary,
+one variable at a time) instead of reasoning from the full composite — session
+experience: the composite "obvious" suspect was wrong twice.
