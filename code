@@ -65,12 +65,6 @@ exit 1
 ' bash "$1" 2>/dev/null
 }
 
-#Print a PATH prefix (for the command string) that includes nvm/opencode
-#install dirs, so nested npm-installed CLIs resolve in non-interactive shells.
-ubuntu_path_prefix(){
-echo 'export PATH="$PATH:/root/.local/bin:/root/.opencode/bin$(N=$(ls -d /root/.nvm/versions/node/*/bin 2>/dev/null | tail -1); [ -n "$N" ] && echo ":$N")"'
-}
-
 status() {
 COUNT=$(ollama list | awk 'NR>1'|wc -l)
 LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
@@ -193,8 +187,11 @@ else
  echo "Warning: no Ollama models found - OpenCode will use its default model"
 fi
 select_project
-PATH_PREFIX=$(ubuntu_path_prefix)
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX && '$OC' $MODEL_ARGS"
+# Launch by absolute path with NO PATH extension: device bisect proved that
+# exporting the nvm/.local PATH prefix wedges opencode's startup (hang), while
+# plain 'cd + absolute-path binary' renders instantly. If a runtime feature
+# ever needs node on PATH, revisit with a narrower export.
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$OC' $MODEL_ARGS"
 }
 
 freebuff_launch(){
@@ -204,8 +201,7 @@ if [ -z "$FB" ]; then
  exit 1
 fi
 select_project
-PATH_PREFIX=$(ubuntu_path_prefix)
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && $PATH_PREFIX && '$FB'"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$FB'"
 }
 
 import_model(){

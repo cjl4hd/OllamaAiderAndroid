@@ -184,7 +184,12 @@ JSON-validated) but **not yet run on device**:
 - **nvm PATH detection fix — device-verified**: opencode/freebuff installed via
   nvm-installed npm (`~/.nvm/versions/node/*/bin`) were invisible to `bash -lc`
   detection; scripts now resolve via explicit candidate paths
-  (`ubuntu_which` / `in_ubuntu_path`). Detection confirmed working on device.
+  (`ubuntu_which` / `in_ubuntu_path`) and launch by **absolute path**.
+- **PATH export removed from launchers — device-bisected**: exporting the
+  nvm/.local PATH prefix inside the launch string wedged opencode's TUI
+  startup (bisect: cd+opencode renders, PATH-export+opencode hangs). Launchers
+  now use plain `cd + absolute-path binary`. `update-ai` keeps the export for
+  its non-interactive commands, where it works fine.
 - **Launch-string fix — device-verified root cause**: the first launch attempt
   failed with `syntax error near unexpected token '}'` because the PATH prefix
   (`export PATH=...`) was joined to the binary with a brace group that bash
