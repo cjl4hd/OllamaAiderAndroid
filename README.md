@@ -87,6 +87,27 @@ Android
 | `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
 | `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
 
+### Choosing a model
+
+The model picker serves both Aider and OpenCode. For OpenCode launches it gains
+a **cloud** entry **after** the local models:
+
+```
+Installed models:
+ 1) qwen-coder-7b:latest ⭐
+ 2) gemma-4-E2B-it-Q4_K_M:latest
+    -- cloud --
+ 4) ☁ OpenCode cloud (its default model)
+```
+
+- Pick a **local** model → OpenCode starts with `--model ollama/<name>` as before.
+- Pick **cloud** → OpenCode starts bare, using its own default cloud model
+  (no `--model` flag, no Ollama involvement). Useful when the phone's RAM is
+  spoken for or you want a stronger model for a one-off task.
+- The last choice is remembered and starred next launch; cloud being last keeps
+  the Enter-default on your first local model.
+- Only menu 7 (OpenCode) shows the cloud entry — Aider and chat stay local-only.
+
 ### Flags
 
 - `update-ai -v / -q / -f / -h` — verbose, quiet, skip confirmation, help

@@ -68,6 +68,7 @@ exit 1
 status() {
 COUNT=$(ollama list | awk 'NR>1'|wc -l)
 LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
+[ "$LAST" = "__CLOUD__" ] && LAST="☁ cloud (opencode)"
 LOADED=$(ollama ps 2>/dev/null | awk 'NR>1{print $1; exit}')
 [ -z "$LOADED" ] && LOADED="none"
 echo "====================================="
@@ -86,8 +87,14 @@ echo
 }
 
 select_model(){
+#Optional "cloud" arg appends an OpenCode-cloud entry after the local models
+#(opencode only; aider/chat are local-only). Cloud is kept LAST so the default
+#choice stays the first local model. Sentinel __CLOUD__ = launch opencode bare
+#(its own default model, e.g. nemotron-3-ultra-free).
+local with_cloud="${1:-}"
+local last="$(cat "$LAST_FILE" 2>/dev/null)"
 mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
-[ ${#MODELS[@]} -eq 0 ] && { echo "No models."; exit 1; }
+[ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ] && { echo "No models."; exit 1; }
 echo "Installed models:"
 for i in "${!MODELS[@]}"; do
  mark=""
@@ -95,9 +102,22 @@ for i in "${!MODELS[@]}"; do
  printf "%2d) %s%s
 " $((i+1)) "${MODELS[$i]}" "$mark"
 done
+local n=${#MODELS[@]}
+if [ -n "$with_cloud" ]; then
+ echo "    -- cloud --"
+ [ "$last" = "__CLOUD__" ] && mark=" ⭐" || mark=""
+ printf "%2d) ☁ OpenCode cloud (its default model)%s\n" $((n+1)) "$mark"
+fi
 read -p "Choose model [1]: " c
 c=${c:-1}
-MODEL="${MODELS[$((c-1))]}"
+case "$c" in ''|*[!0-9]*) c=1 ;; esac
+[ "$c" -lt 1 ] && c=1
+[ "$c" -gt "$n" ] && [ -z "$with_cloud" ] && c=1
+if [ "$c" -gt "$n" ] && [ -n "$with_cloud" ]; then
+ MODEL="__CLOUD__"
+else
+ MODEL="${MODELS[$((c-1))]}"
+fi
 echo "$MODEL" > "$LAST_FILE"
 }
 
@@ -179,9 +199,13 @@ if [ -z "$OC" ]; then
  echo "OpenCode is not installed - run 'update-ai' to install it"
  exit 1
 fi
-select_model
+select_model cloud
+CONFIG_OK=1
+sync_opencode_config || CONFIG_OK=0
 MODEL_ARGS=""
-if sync_opencode_config; then
+if [ "$MODEL" = "__CLOUD__" ]; then
+ : # bare launch - opencode uses its own default cloud model
+elif [ "$CONFIG_OK" = 1 ]; then
  MODEL_ARGS="--model ollama/$MODEL"
 else
  echo "Warning: no Ollama models found - OpenCode will use its default model"
