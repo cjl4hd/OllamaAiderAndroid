@@ -31,6 +31,11 @@ export OLLAMA_KV_CACHE_TYPE=q8_0
 #Ensure only 1 model used at a time
 export OLLAMA_MAX_LOADED_MODELS=1
 
+#Single request slot: Ollama's default (4) multiplies the KV cache 4x, which
+#alone can push a 7b model past what the phone can hold. One user, one request
+#at a time - override via OLLAMA_NUM_PARALLEL in ~/.ai-env.conf.
+export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+
 #Default context window for requests that don't set num_ctx. OpenCode's agent
 #loop wants 64k+, but phone RAM with q8_0 KV cache realistically caps lower.
 #Override via OLLAMA_CONTEXT_LENGTH in ~/.ai-env.conf.

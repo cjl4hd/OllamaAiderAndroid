@@ -85,6 +85,7 @@ Android
 | `OPENCODE` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
+| `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
 
 ### Flags
 
@@ -193,13 +194,17 @@ JSON-validated) but **not yet run on device**:
 - Freebuff install/update path in `update-ai` (assumes `apt install nodejs npm`
   works in proot Ubuntu; not yet exercised)
 - Freebuff launch from `code` (never launched on device)
-- OpenCode launch: model picker, config generation, and launch call all
-  device-verified. Device testing caught a real bug: the generated config was
-  rejected by OpenCode's schema (`Missing key ...limit.output`) and the TUI died
-  silently on startup, which looked like a hang. The generator now emits
-  `limit.output` (capped at 4096) for every model. **After updating, regenerate
-  the cached config**: `code` → 10) Regen OpenCode Config → y. End-to-end agent
-  session still to confirm.
+- **OpenCode local-model flow — mostly device-verified**: config generation
+  (with the schema-required `limit.output`, capped at 4096), Ollama's
+  OpenAI-compatible `/v1` endpoint, and a full `opencode run "say hi" --model
+  ollama/<model>` turn all confirmed on device. Memory findings: Ollama's
+  default `num_parallel=4` quadruples KV-cache RAM and alone can keep a 7b
+  model from loading on a 12 GB phone — `OLLAMA_NUM_PARALLEL=1` is now the
+  default (restart `code` or `restart_ollama` to apply); gemma-E2B loads in
+  ~5 min even so. **Still unverified: the TUI itself** (`opencode --model
+  ollama/...` from an interactive shell) — run mode works, TUI startup hung.
+  If it persists after a regen, check `TERM` and the log:
+  `tail -30 ~/.local/share/opencode/log/$(ls -t ~/.local/share/opencode/log | head -1)`.
 - `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
   script itself unrun)
 - Status banner `Loaded`/`Ctx` lines and menu options 9–10
@@ -210,8 +215,8 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
 ## Todo
 
 - Verify setup / update / run scripts on another phone
-- Fully support OpenCode in `code` and `update-ai` (model/provider config, doctor-ai coverage, menu parity with Aider)
-- Add Freebuff agent support in `code` and `update-ai` at parity with OpenCode
+- Verify the OpenCode TUI on device (run mode works; TUI startup hung as of last test)
+- Verify Freebuff install + launch on device (install path never exercised)
 - Add support for optional plugins/tools:
   - whisper
   - kiwix

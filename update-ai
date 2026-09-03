@@ -48,6 +48,8 @@ Environment (via ~/.ai-env.conf):
                         or no (never install) (default: ask)
   OLLAMA_CONTEXT_LENGTH  Ollama default context window (default: 16384). OpenCode
                         wants 64k+; lower it if RAM-constrained.
+  OLLAMA_NUM_PARALLEL    Concurrent request slots (default: 1). Each slot multiplies
+                        KV-cache RAM; keep it at 1 on phones.
 EOF
     exit 0
 }
@@ -331,6 +333,7 @@ PROJECT_NAME=$PROJECT_NAME
 # OPENCODE=ask
 # FREEBUFF=ask
 # OLLAMA_CONTEXT_LENGTH=16384
+# OLLAMA_NUM_PARALLEL=1
 EOF
 fi
 
