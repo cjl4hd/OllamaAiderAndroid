@@ -201,10 +201,10 @@ JSON-validated) but **not yet run on device**:
   default `num_parallel=4` quadruples KV-cache RAM and alone can keep a 7b
   model from loading on a 12 GB phone — `OLLAMA_NUM_PARALLEL=1` is now the
   default (restart `code` or `restart_ollama` to apply); gemma-E2B loads in
-  ~5 min even so. **Still unverified: the TUI itself** (`opencode --model
-  ollama/...` from an interactive shell) — run mode works, TUI startup hung.
-  If it persists after a regen, check `TERM` and the log:
-  `tail -30 ~/.local/share/opencode/log/$(ls -t ~/.local/share/opencode/log | head -1)`.
+  ~5 min even so. **The TUI is device-verified**: renders and stays responsive
+  with `--model ollama/...`. Remaining issue: very slow model responses —
+  tracked in Todo. First suspect: that session ran before Ollama was restarted
+  with `OLLAMA_NUM_PARALLEL=1`, so the 4-slot KV-cache tax was still active.
 - `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
   script itself unrun)
 - Status banner `Loaded`/`Ctx` lines and menu options 9–10
@@ -215,7 +215,18 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
 ## Todo
 
 - Verify setup / update / run scripts on another phone
-- Verify the OpenCode TUI on device (run mode works; TUI startup hung as of last test)
+- Debug slow Ollama responses in OpenCode (TUI itself verified: renders, responsive):
+  1. Retest after restarting Ollama with `OLLAMA_NUM_PARALLEL=1` — the first
+     slow session ran under the old server (num_parallel=4 KV-cache tax, and
+     possibly a partially-loaded model). This alone may close it.
+  2. If still slow: try `OLLAMA_NUM_THREAD` matching the phone's big cores,
+     watch for thermal throttling on sustained generation, benchmark the same
+     model with `bench.py`, and compare aider (native `/api`) vs opencode
+     (`/v1`) latency to isolate any endpoint overhead.
+  3. Physics note: OpenCode's agent loop sends a large prompt (system + tools +
+     session context) every turn — prefilling thousands of tokens is inherently
+     slow at phone compute speeds. Some of this is cost-of-doing-business, not
+     a bug; judge by tokens/sec, not wall-clock first response.
 - Verify Freebuff install + launch on device (install path never exercised)
 - Add support for optional plugins/tools:
   - whisper
