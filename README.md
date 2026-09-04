@@ -68,7 +68,9 @@ Android
 9. Freebuff (project picker → freebuff inside Ubuntu; cloud models, no API key)
 10. Regen OpenCode Config (overwrite the generated `opencode.json` from the
     current `ollama list` — use after importing a new model)
-11. Quit
+11. Benchmark Model (model picker → timed Ollama API run → tok/s; bench.py /
+    bench_all.py remain the deep benchmarks with prompt-eval vs decode split)
+12. Quit
 
 ## Configuration
 
@@ -86,6 +88,8 @@ Android
 | `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
 | `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
+| `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
 
 ### Choosing a model
 
@@ -248,15 +252,19 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
   1. Retest after restarting Ollama with `OLLAMA_NUM_PARALLEL=1` — the first
      slow session ran under the old server (num_parallel=4 KV-cache tax, and
      possibly a partially-loaded model). This alone may close it.
-  2. If still slow: try `OLLAMA_NUM_THREAD` matching the phone's big cores,
-     watch for thermal throttling on sustained generation, benchmark the same
-     model with `bench.py`, and compare aider (native `/api`) vs opencode
-     (`/v1`) latency to isolate any endpoint overhead.
+  2. Measure: menu 11 (Benchmark Model) gives whole-run tok/s per model;
+     `bench.py`/`bench_all.py` give the prompt-eval vs decode split. If decode
+     is fine but responses stay slow, compare aider (native `/api`) vs opencode
+     (`/v1`) latency to isolate endpoint overhead, and watch for thermal
+     throttling on sustained generation (thread count is a per-request
+     `num_thread` Modelfile option — there is no `OLLAMA_NUM_THREAD` env var).
   3. Physics note: OpenCode's agent loop sends a large prompt (system + tools +
      session context) every turn — prefilling thousands of tokens is inherently
      slow at phone compute speeds. Some of this is cost-of-doing-business, not
      a bug; judge by tokens/sec, not wall-clock first response.
-- Verify Freebuff install + launch on device (install path never exercised)
+- Verify Freebuff on-device install/update path in `update-ai` (launch now
+  works via node absolute path; the update-ai install steps have not been
+  re-exercised since)
 - Add support for optional plugins/tools:
   - whisper
   - kiwix

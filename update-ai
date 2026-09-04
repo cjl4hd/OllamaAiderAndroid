@@ -50,6 +50,12 @@ Environment (via ~/.ai-env.conf):
                         wants 64k+; lower it if RAM-constrained.
   OLLAMA_NUM_PARALLEL    Concurrent request slots (default: 1). Each slot multiplies
                         KV-cache RAM; keep it at 1 on phones.
+  OLLAMA_KEEP_ALIVE    How long a model stays loaded after use (default: -1 =
+                        forever). Reloads cost minutes on a phone; override to
+                        e.g. 30m only if a big model squeezes RAM.
+  OLLAMA_LOAD_TIMEOUT    Max wait for a cold model load before Ollama aborts
+                        (default: 15m; Ollama's own default of 5m is tight for
+                        phone flash + large GGUFs).
 EOF
     exit 0
 }
@@ -334,6 +340,8 @@ PROJECT_NAME=$PROJECT_NAME
 # FREEBUFF=ask
 # OLLAMA_CONTEXT_LENGTH=16384
 # OLLAMA_NUM_PARALLEL=1
+# OLLAMA_KEEP_ALIVE=-1
+# OLLAMA_LOAD_TIMEOUT=15m
 EOF
 fi
 

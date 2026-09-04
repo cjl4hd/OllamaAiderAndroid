@@ -21,10 +21,15 @@ nothing about the host beyond Termux + Android storage access.
   force-regenerates that config) and Freebuff. Sets Ollama env tuning (flash
   attention, q8_0 KV cache, single loaded model, `OLLAMA_NUM_PARALLEL=1` —
   Ollama's default of 4 multiplies KV-cache RAM 4x and alone can keep a 7b model
-  from loading on a 12 GB phone — and `OLLAMA_CONTEXT_LENGTH`) for phone-class
+  from loading on a 12 GB phone — plus `OLLAMA_KEEP_ALIVE=-1` (model reloads
+  cost minutes on a phone; idle RAM is cheaper than cold reloads) and
+  `OLLAMA_LOAD_TIMEOUT=15m` (Ollama's 5m default is tight for phone flash) —
+  and `OLLAMA_CONTEXT_LENGTH`) for phone-class
   hardware. The generated OpenCode config must include `limit.output` for every
   model: OpenCode's schema requires it, and a schema-invalid config kills the
-  TUI silently at startup (no error, no render).
+  TUI silently at startup (no error, no render). Menu option 11 benchmarks a
+  model via the Ollama API (whole-run tok/s); bench.py/bench_all.py are the
+  deeper llama.cpp benchmarks.
 - `doctor-ai` — health checks and version report.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.
