@@ -282,16 +282,20 @@ case "$c" in ''|*[!0-9]*) c=1 ;; esac
 [ "$c" -lt 1 ] && c=1
 [ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
 MODEL="${MODELS[$((c-1))]}"
-echo "Benchmarking $MODEL (warmup + timed run, ~1-3 min)..."
+echo "Benchmarking $MODEL (warmup + timed run, ~2-5 min)..."
 #Warmup: forces the model fully resident so the timed run measures generation,
 #not cold-load. keep_alive=-1 keeps it resident for repeat runs.
 curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"hi","raw":true,"keep_alive":-1}' >/dev/null
 START=$(date +%s)
-RESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"Count from 1 to 100.","raw":true,"keep_alive":-1}')
+#num_predict raised: Ollama's default cap (128) can end the run early and
+#shrink the sample; stream:false returns one JSON with full timing stats.
+RESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"Count from 1 to 100.","raw":true,"keep_alive":-1,"num_predict":256,"stream":false}')
 END=$(date +%s)
-EVALC=$(printf '%s' "$RESP" | tail -1 | grep -o '"eval_count":[0-9]*' | cut -d: -f2)
+EVALC=$(printf '%s' "$RESP" | grep -o '"eval_count":[0-9]*' | cut -d: -f2 | tail -1)
+EVALD=$(printf '%s' "$RESP" | grep -o '"eval_duration":[0-9]*' | cut -d: -f2 | tail -1)
 if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
  EVALC=$(printf '%s' "$RESP" | grep -c '"response"')
+ EVALD=""
 fi
 if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
  echo "No output generated - check 'ollama ps' and try again."
@@ -299,7 +303,14 @@ if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
 fi
 SECS=$(( END - START ))
 [ "$SECS" -eq 0 ] && SECS=1
-echo "generated $EVALC tokens in ${SECS}s -> $(( EVALC / SECS )) tok/s (whole-run average)"
+#eval_duration is nanoseconds: tok/s = eval_count / (eval_duration / 1e9).
+#Decode rate is the number that matters (excludes wall-clock overhead);
+#awk for one decimal - integer division rounded 1.9 down to 1.
+DECODE=$(awk -v c="$EVALC" -v d="$EVALD" 'BEGIN{ if (d+0 > 0) printf "%.1f", c/(d/1e9); else print "?" }')
+AVG=$(awk -v c="$EVALC" -v s="$SECS" 'BEGIN{ printf "%.1f", c/s }')
+echo "generated $EVALC tokens in ${SECS}s"
+echo "  decode: ${DECODE} tok/s (pure generation speed, from Ollama timings)"
+echo "  whole-run average: ${AVG} tok/s"
 echo "Use bench.py / bench_all.py for the prompt-eval vs decode split and llama.cpp numbers."
 }
 
