@@ -76,6 +76,31 @@ exit 1
 ' bash "$1" 2>/dev/null
 }
 
+#Free RAM in GB from /proc/meminfo (Android kernels expose MemAvailable).
+free_ram_gb(){
+awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
+}
+
+#Load installed model names (MODELS) and on-disk sizes in GB (DISKS).
+load_models(){
+mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
+mapfile -t DISKS < <(ollama list|awk 'NR>1{printf "%.1f", $3/1e9}')
+}
+
+#One-line descriptor for a model: parameter count, quantization, disk size.
+#ollama show header lines look like "  Parameters    : 4.2B"; older ollama
+#versions may omit fields - whatever is missing is left out of META.
+model_meta(){ # $1=model, $2=diskGB (may be empty) -> sets META
+local out params quant
+out=$(ollama show "$1" 2>/dev/null)
+params=$(printf '%s\n' "$out" | awk -F': *' '/^  Parameters/{print $2; exit}')
+quant=$(printf '%s\n' "$out" | awk -F': *' '/^  Quantization/{print $2; exit}')
+META=""
+[ -n "$params" ] && META="$params"
+[ -n "$quant" ] && META="$META $quant"
+[ -n "$2" ] && [ "$2" != "0.0" ] && META="$META - ${2}GB disk"
+}
+
 status() {
 COUNT=$(ollama list | awk 'NR>1'|wc -l)
 LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
@@ -94,6 +119,8 @@ echo "Models  : $COUNT"
 echo "Last    : $LAST"
 echo "Loaded  : $LOADED"
 echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
+FREE=$(free_ram_gb)
+echo "FreeRAM : ${FREE:-?}GB"
 echo
 }
 
@@ -104,14 +131,16 @@ select_model(){
 #(its own default model, e.g. nemotron-3-ultra-free).
 local with_cloud="${1:-}"
 local last="$(cat "$LAST_FILE" 2>/dev/null)"
-mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
+load_models
 [ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ] && { echo "No models."; exit 1; }
+FREE=$(free_ram_gb)
+[ -n "$FREE" ] && echo "Free RAM: ${FREE}GB (model + its context KV cache must fit)"
 echo "Installed models:"
 for i in "${!MODELS[@]}"; do
  mark=""
- [ "${MODELS[$i]}" = "$(cat "$LAST_FILE" 2>/dev/null)" ] && mark=" ⭐"
- printf "%2d) %s%s
-" $((i+1)) "${MODELS[$i]}" "$mark"
+ [ "${MODELS[$i]}" = "$last" ] && mark=" ⭐"
+ model_meta "${MODELS[$i]}" "${DISKS[$i]:-}"
+ printf "%2d) %-38s %s%s\n" $((i+1)) "${MODELS[$i]}" "$META" "$mark"
 done
 local n=${#MODELS[@]}
 if [ -n "$with_cloud" ]; then
@@ -272,27 +301,37 @@ rm -f "$TMP"
 restart_ollama(){ pkill ollama || true; nohup ollama serve >/dev/null 2>&1 & sleep 3; }
 
 bench_model(){
-mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
+load_models
 [ ${#MODELS[@]} -eq 0 ] && { echo "No models to benchmark."; return 1; }
+FREE=$(free_ram_gb)
+[ -n "$FREE" ] && echo "Free RAM: ${FREE}GB"
 echo "Models:"
-for i in "${!MODELS[@]}"; do printf "%2d) %s\n" $((i+1)) "${MODELS[$i]}"; done
+for i in "${!MODELS[@]}"; do
+ model_meta "${MODELS[$i]}" "${DISKS[$i]:-}"
+ printf "%2d) %-38s %s\n" $((i+1)) "${MODELS[$i]}" "$META"
+done
 read -p "Model to benchmark [1]: " c
 c=${c:-1}
 case "$c" in ''|*[!0-9]*) c=1 ;; esac
 [ "$c" -lt 1 ] && c=1
 [ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
 MODEL="${MODELS[$((c-1))]}"
-echo "Benchmarking $MODEL (warmup + timed run, ~2-5 min)..."
-#Warmup: forces the model fully resident so the timed run measures generation,
+echo "Benchmarking $MODEL (warmup + decode probe + prefill probe, ~2-5 min)..."
+#Warmup: forces the model fully resident so the probes measure compute,
 #not cold-load. keep_alive=-1 keeps it resident for repeat runs.
 curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"hi","raw":true,"keep_alive":-1}' >/dev/null
-START=$(date +%s)
-#num_predict raised: Ollama's default cap (128) can end the run early and
-#shrink the sample; stream:false returns one JSON with full timing stats.
+#Decode probe: short prompt, generous num_predict (Ollama's default cap of 128
+#can end the run early). stream:false returns one JSON with full timing stats.
 RESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"Count from 1 to 100.","raw":true,"keep_alive":-1,"num_predict":256,"stream":false}')
-END=$(date +%s)
 EVALC=$(printf '%s' "$RESP" | grep -o '"eval_count":[0-9]*' | cut -d: -f2 | tail -1)
 EVALD=$(printf '%s' "$RESP" | grep -o '"eval_duration":[0-9]*' | cut -d: -f2 | tail -1)
+#Prefill probe: a big no-op prompt (num_predict=1 keeps output negligible)
+#makes prompt_eval dominate - this is the per-turn cost of OpenCode's fat
+#agent prompts.
+PREFILL_PROMPT=$(printf 'x%.0s' $(seq 1 400))
+PRESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"'"$PREFILL_PROMPT"'","raw":true,"keep_alive":-1,"num_predict":1,"stream":false}')
+PROMPTC=$(printf '%s' "$PRESP" | grep -o '"prompt_eval_count":[0-9]*' | cut -d: -f2 | tail -1)
+PROMPTD=$(printf '%s' "$PRESP" | grep -o '"prompt_eval_duration":[0-9]*' | cut -d: -f2 | tail -1)
 if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
  EVALC=$(printf '%s' "$RESP" | grep -c '"response"')
  EVALD=""
@@ -301,17 +340,26 @@ if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
  echo "No output generated - check 'ollama ps' and try again."
  return 1
 fi
-SECS=$(( END - START ))
-[ "$SECS" -eq 0 ] && SECS=1
-#eval_duration is nanoseconds: tok/s = eval_count / (eval_duration / 1e9).
-#Decode rate is the number that matters (excludes wall-clock overhead);
-#awk for one decimal - integer division rounded 1.9 down to 1.
-DECODE=$(awk -v c="$EVALC" -v d="$EVALD" 'BEGIN{ if (d+0 > 0) printf "%.1f", c/(d/1e9); else print "?" }')
-AVG=$(awk -v c="$EVALC" -v s="$SECS" 'BEGIN{ printf "%.1f", c/s }')
-echo "generated $EVALC tokens in ${SECS}s"
-echo "  decode: ${DECODE} tok/s (pure generation speed, from Ollama timings)"
-echo "  whole-run average: ${AVG} tok/s"
-echo "Use bench.py / bench_all.py for the prompt-eval vs decode split and llama.cpp numbers."
+#Durations are nanoseconds: tok/s = count / (duration / 1e9). 2 decimals so
+#sub-tok/s phone speeds stay meaningful.
+DECODE=$(awk -v c="$EVALC" -v d="$EVALD" 'BEGIN{ if (d+0 > 0) printf "%.2f", c/(d/1e9); else print "?" }')
+PREFILL=""
+if [ -n "$PROMPTC" ] && [ "$PROMPTC" != "0" ] && [ -n "$PROMPTD" ]; then
+ PREFILL=$(awk -v c="$PROMPTC" -v d="$PROMPTD" 'BEGIN{ printf "%.2f", c/(d/1e9) }')
+fi
+echo "decode probe: $EVALC tokens"
+echo "  decode:  ${DECODE} tok/s  (generation speed)"
+[ -n "$PREFILL" ] && echo "  prefill: ${PREFILL} tok/s  (prompt processing, 400-token probe)"
+#Actual loaded footprint (weights + KV cache at the active ctx) from /api/ps:
+#KV-cache RAM varies with architecture, so measure it instead of estimating.
+PS_JSON=$(curl -s -m 5 http://127.0.0.1:11434/api/ps)
+PSIZE=$(printf '%s' "$PS_JSON" | grep -o '"size":[0-9.]*' | cut -d: -f2 | head -1)
+PCTX=$(printf '%s' "$PS_JSON" | grep -o '"context_length":[0-9]*' | cut -d: -f2 | head -1)
+if [ -n "$PSIZE" ]; then
+ PSGB=$(awk -v b="$PSIZE" 'BEGIN{ printf "%.1f", b/1e9 }')
+ echo "  loaded:  ${PSGB}GB RAM (weights + KV cache${PCTX:+ at ctx $PCTX})"
+fi
+echo "Use bench.py / bench_all.py for llama.cpp-level detail."
 }
 
 start_ollama

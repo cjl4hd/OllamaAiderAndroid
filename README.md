@@ -68,8 +68,10 @@ Android
 9. Freebuff (project picker → freebuff inside Ubuntu; cloud models, no API key)
 10. Regen OpenCode Config (overwrite the generated `opencode.json` from the
     current `ollama list` — use after importing a new model)
-11. Benchmark Model (model picker → timed Ollama API run → tok/s; bench.py /
-    bench_all.py remain the deep benchmarks with prompt-eval vs decode split)
+11. Benchmark Model (model picker → decode + prefill probes → tok/s at 2
+    decimals, plus the model's actual loaded RAM from Ollama's `/api/ps` —
+    weights + KV cache at the active context; bench.py / bench_all.py remain
+    the deep benchmarks)
 12. Quit
 
 ## Configuration
@@ -88,6 +90,8 @@ Android
 | `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
 | `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
+| `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
 | `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
 

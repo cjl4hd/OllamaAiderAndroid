@@ -56,6 +56,9 @@ Environment (via ~/.ai-env.conf):
   OLLAMA_LOAD_TIMEOUT    Max wait for a cold model load before Ollama aborts
                         (default: 15m; Ollama's own default of 5m is tight for
                         phone flash + large GGUFs).
+  OLLAMA_KEEP_ALIVE    How long a model stays loaded after use (default: -1 =
+                        forever). Reloads cost minutes on a phone; override to
+                        e.g. 30m only if a big model squeezes RAM.
 EOF
     exit 0
 }
