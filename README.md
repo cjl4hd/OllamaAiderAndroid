@@ -219,7 +219,10 @@ JSON-validated) but **not yet run on device**:
   launch still to confirm.
 - Freebuff install/update path in `update-ai` (assumes `apt install nodejs npm`
   works in proot Ubuntu; not yet exercised)
-- Freebuff launch from `code` (never launched on device)
+- Freebuff launch from `code` — first on-device attempt hit the npm-shim
+  shebang problem (`env: 'node': No such file or directory`); launcher fixed
+  to run the shim via node's absolute path (same lesson as the opencode
+  launch). Full first launch still to exercise.
 - **OpenCode local-model flow — mostly device-verified**: config generation
   (with the schema-required `limit.output`, capped at 4096), Ollama's
   OpenAI-compatible `/v1` endpoint, and a full `opencode run "say hi" --model

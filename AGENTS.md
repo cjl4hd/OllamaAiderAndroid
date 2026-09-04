@@ -83,9 +83,11 @@ nothing about the host beyond Termux + Android storage access.
    `doctor-ai`) — never `command -v`. Launch TUI apps by absolute path **without**
    extending PATH in the launch string: an `export PATH=...` prefix wedged
    opencode's startup on device (bisect-verified: cd + absolute-path binary
-   renders; PATH-export + binary hangs). `update-ai`'s `run_in_ubuntu` may still
-   export PATH — its commands are non-interactive one-shots, where the prefix is
-   proven harmless.
+   renders; PATH-export + binary hangs). npm shims are `#!/usr/bin/env node`:
+   in a non-interactive shell `env` cannot resolve node either — run the shim
+   via node's absolute path instead (freebuff needed this; `ubuntu_which node`).
+   `update-ai`'s `run_in_ubuntu` may still export PATH — its commands are
+   non-interactive one-shots, where the prefix is proven harmless.
 
 ## Conventions
 

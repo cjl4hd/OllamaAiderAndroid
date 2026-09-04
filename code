@@ -224,8 +224,18 @@ if [ -z "$FB" ]; then
  echo "Freebuff is not installed - run 'update-ai' to install it"
  exit 1
 fi
+# The npm 'freebuff' shim starts '#!/usr/bin/env node' - and a non-interactive
+# 'bash -lc' has no nvm PATH, so env cannot find node (device-verified:
+# "env: 'node': No such file or directory"). The shim is a self-contained JS
+# entry file, so run it directly with node's absolute path - same lesson as
+# the opencode launch: never depend on PATH inside the launch shell.
+NODE_BIN=$(ubuntu_which node)
+if [ -z "$NODE_BIN" ]; then
+ echo "node is not installed in Ubuntu - run 'update-ai'"
+ exit 1
+fi
 select_project
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$FB'"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$NODE_BIN' '$FB'"
 }
 
 import_model(){
