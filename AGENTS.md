@@ -33,6 +33,12 @@ nothing about the host beyond Termux + Android storage access.
 - `doctor-ai` — health checks and version report.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.
+- `adb-ai` — runs inside proot Ubuntu only: pairs/connects wireless adb to the
+  phone itself over loopback, then reduces **Android** memory in tiers (0 info,
+  1 kill list incl. Facebook/Instagram + cached-process kills, 2 persistent
+  device_config/settings with saved originals + `revert` — phantom process
+  killer off lives here, 3 root-gated). Config `~/.adb-ai.conf` in the Ubuntu
+  home; state/backups in `~/.config/adb-ai/`.
 - `ubuntu` — plain shell into the Ubuntu container (`proot-distro login`).
 - `aider-ubuntu` — runs aider inside Ubuntu with argument passthrough via the
   `bash -lc 'aider "$@"' bash "$@"` trick. `aider-ubuntu.txt` is a tutorial
@@ -117,3 +123,11 @@ strings: execute the real function with stubbed dependencies and validate its
 actual output. For on-device hangs, bisect the ingredients (cd / PATH / binary,
 one variable at a time) instead of reasoning from the full composite — session
 experience: the composite "obvious" suspect was wrong twice.
+
+adb-ai specifics (device-verified on SM-S942U1): an `adb` client inside proot
+must never hold the caller's stdout pipe — daemon-spawning calls and blocked
+mdns wedge the shell indefinitely; redirect to files, use `timeout -k`, and
+`</dev/null` (see `adbx`/`mdns_ports`/`device_listed` in adb-ai). Samsung's
+`dumpsys meminfo` section is `380,893K: pkg` (uppercase K, no space) vs AOSP's
+`380,893 kB: pkg` — parse both. `/proc/swaps` is SELinux-blocked from adb shell;
+use meminfo's SwapTotal/SwapFree.

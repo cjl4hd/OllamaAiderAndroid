@@ -1,0 +1,790 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# adb-ai — wireless adb to the phone itself + Android memory reduction
+# Runs INSIDE proot-distro Ubuntu, NOT in Termux (host).
+#
+# proot shares Android's network namespace, so the phone's own adbd is
+# reachable on 127.0.0.1:<wireless-debugging-port> once paired. Everything
+# this script does via adb hits the real Android system: freeing Android RAM
+# frees RAM for Ollama/aider running in this same container.
+#
+# Tiers:
+#   0  info     read-only: top PSS consumers, free RAM, swap/zram
+#   1  safe     transient: am kill-all, force-stop kill list, trim caches
+#   2  persist  device_config/settings changes; originals saved, `revert`
+#               restores them. Phantom process killer OFF lives here —
+#               Android 12+ kills Termux/proot child processes without it.
+#   3  root     needs su on the phone: drop_caches, zram idle/recompact.
+#               Never runs silently: only via menu 3 or `--t3` + `--force`.
+#
+# State:
+#   ~/.adb-ai.conf               user config (kill list, tunables), sourced
+#   ~/.config/adb-ai/state.conf  last working serial/port, sync-disable marker
+#   ~/.config/adb-ai/backups.txt saved originals for `revert` (one per line:
+#                                kind ns key value; value UNSET = was unset)
+# =============================================================================
+
+CONFIG_FILE="$HOME/.adb-ai.conf"
+STATE_DIR="$HOME/.config/adb-ai"
+STATE_FILE="$STATE_DIR/state.conf"
+BACKUP_FILE="$STATE_DIR/backups.txt"
+
+# --- Defaults (overridable via ~/.adb-ai.conf) ---
+# FB trio = Samsung's preinstalled Facebook service stubs (content pre-fetchers,
+# device-verified present and running); they respawn unless frozen via 'apps'.
+DEFAULT_KILL=(com.facebook.katana com.facebook.orca com.instagram.android \
+              com.facebook.services com.facebook.appmanager com.facebook.system)
+KILL_PACKAGES=()
+MAX_CACHED_PROCESSES=16      # device_config activity_manager/max_cached_processes (stock 32)
+BACKGROUND_PROCESS_LIMIT=2   # settings global background_process_limit (Dev-option equivalent)
+
+# --- Flags ---
+QUIET=false
+FORCE=false
+CONNECT_PORT=""
+PAIR_PORT=""
+PAIR_CODE=""
+T1=false; T2=false; T3=false; T0=false
+APP_MODE=""; APP_PKGS=()
+
+usage() {
+    cat <<EOF
+Usage: adb-ai [COMMAND] [OPTIONS]
+
+Wireless adb to THIS phone + Android memory reduction. Run inside proot
+Ubuntu; talks to the phone's own Android system over loopback adb.
+
+Commands:
+  (none) | connect   Pair if needed, connect, show status
+  status             Show connection + memory + phantom-killer state
+  mem                Memory menu (tiers 0-3, revert) — interactive
+  apps               Kill-list / app management menu — interactive
+  revert             Restore every saved device_config/settings original
+
+Options:
+  -q, --quiet          Non-interactive; safe actions auto-approved
+  -f, --force          Skip confirmation prompts (also required for --t2/--t3)
+  --t0                 mem: info only
+  --t1                 mem: tier 1 (kill cached processes, force-stop kill
+                       list, trim caches) — transient, safe
+  --t2                 mem: tier 2 (phantom killer off, cached-process cap,
+                       background-process limit, animations off) — persistent;
+                       originals saved for revert. Requires --force to run
+                       non-interactively
+  --t3                 mem: tier 3 (root: drop_caches, zram). Requires su on
+                       the phone; requires --force non-interactively
+  --all                mem: tiers 0+1+2 then status
+  --list               apps: show the configured kill list
+  --top                apps: top memory consumers (from dumpsys meminfo)
+  --stop PKG...        apps: force-stop packages (transient)
+  --freeze PKG...      apps: pm disable-user (persistent; needs --force)
+  --unfreeze PKG...    apps: pm enable
+  --connect-port N     connect: skip discovery, use this port
+  --pair-port N        connect: pair via this pairing port
+  --pair-code XXXXXX   connect: pairing code (with --pair-port)
+  -h, --help           Show this help
+
+First run (Android 11+): enable Developer options > Wireless debugging,
+choose "Pair with pairing code", run `adb-ai`, enter the port + code shown.
+Split the screen so the dialog stays up — the pairing port closes the
+instant the dialog is dismissed. Pairing persists; later runs re-discover
+the (rotating) connect port automatically. Config: ~/.adb-ai.conf
+(kill list, tier-2 values).
+EOF
+    exit 0
+}
+
+log() { [ "$QUIET" = false ] && echo "$*" >&2; return 0; }
+vlog() { [ "${VERBOSE:-false}" = true ] && echo "[DEBUG] $*" >&2; return 0; }
+err() { echo "ERROR: $*" >&2; }
+die() { err "$*"; exit 1; }
+
+# =============================================================================
+# Environment guard (hard rule: this script is Ubuntu-side only)
+# =============================================================================
+
+if [ ! -r /etc/os-release ] || ! grep -q '^ID=ubuntu' /etc/os-release; then
+    # Diagnose the two ways to get here: the Termux host (no /etc/os-release,
+    # but its data dir is right there) or a non-Ubuntu container.
+    if [ -d "/data/data/com.termux" ]; then
+        die "This runs INSIDE proot Ubuntu - run 'ubuntu' first, then 'adb-ai'"
+    fi
+    die "This script must run inside a proot Ubuntu container (/etc/os-release not Ubuntu)"
+fi
+
+# =============================================================================
+# Flag + command parsing
+# =============================================================================
+
+CMD=""
+if [ $# -gt 0 ]; then
+    case "$1" in
+        -h|--help) usage ;;
+        connect|status|mem|apps|revert) CMD="$1"; shift ;;
+        -*) ;;  # flag as first arg — parsed below
+        *) die "Unknown command: $1 (try --help)" ;;
+    esac
+fi
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -q|--quiet) QUIET=true ;;
+        -f|--force) FORCE=true ;;
+        -v|--verbose) VERBOSE=true ;;
+        --t0) T0=true ;;
+        --t1) T1=true ;;
+        --t2) T2=true ;;
+        --t3) T3=true ;;
+        --all) T0=true; T1=true; T2=true ;;
+        --connect-port) [ $# -ge 2 ] || die "--connect-port needs a value"; CONNECT_PORT="$2"; shift ;;
+        --pair-port)    [ $# -ge 2 ] || die "--pair-port needs a value"; PAIR_PORT="$2"; shift ;;
+        --pair-code)    [ $# -ge 2 ] || die "--pair-code needs a value"; PAIR_CODE="$2"; shift ;;
+        --list|--top) APP_MODE="${1#--}" ;;
+        --stop|--freeze|--unfreeze)
+            APP_MODE="${1#--}"; shift
+            [ $# -ge 1 ] || die "--$APP_MODE needs at least one package"
+            APP_PKGS=("$@"); shift $((${#APP_PKGS[@]} - 1)) ;;
+        -h|--help) usage ;;
+        *) die "Unknown option: $1 (try --help)" ;;
+    esac
+    shift
+done
+
+# Tier flags without an explicit command mean: run the mem flow
+CMD="${CMD:-connect}"
+if [ "$T0$T1$T2$T3" != "falsefalsefalsefalse" ] && [ "$CMD" = "connect" ]; then
+    CMD="mem"
+fi
+
+# =============================================================================
+# Config (sourced; seeded on first run so the file documents itself)
+# =============================================================================
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    cat > "$CONFIG_FILE" <<EOF
+# adb-ai config (sourced by adb-ai). Packages force-stopped by tier 1:
+# (com.facebook.services/appmanager/system are Samsung's FB stubs - freeze
+# them via 'adb-ai apps --freeze' if you want them gone for good)
+KILL_PACKAGES=(com.facebook.katana com.facebook.orca com.instagram.android \
+               com.facebook.services com.facebook.appmanager com.facebook.system)
+# Tier 2 persistent tuning (all revertible via 'adb-ai revert'):
+MAX_CACHED_PROCESSES=16      # device_config activity_manager/max_cached_processes (stock 32)
+BACKGROUND_PROCESS_LIMIT=2   # settings global background_process_limit (Dev-option equivalent)
+EOF
+    log "Created $CONFIG_FILE"
+fi
+# shellcheck disable=SC1090
+source "$CONFIG_FILE" || true
+if [ ${#KILL_PACKAGES[@]} -eq 0 ]; then
+    KILL_PACKAGES=("${DEFAULT_KILL[@]}")
+fi
+
+# =============================================================================
+# State helpers
+# =============================================================================
+
+state_set() { # key value -> state.conf (KEY="value")
+    [ -f "$STATE_FILE" ] || { mkdir -p "$STATE_DIR"; : > "$STATE_FILE"; }
+    grep -v "^$1=" "$STATE_FILE" > "$STATE_FILE.tmp" 2>/dev/null || true
+    echo "$1=\"$2\"" >> "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+state_get() { # key -> stdout (empty if unset)
+    [ -f "$STATE_FILE" ] || return 0
+    # awk reading the file directly - device lesson: the sed|tail variant of
+    # this exact read hung indefinitely mid-run in live traces.
+    awk -F'"' -v k="$1" '$1 == k"=" { print $2; exit }' "$STATE_FILE" 2>/dev/null
+}
+
+backup_add() { # kind ns key value (value UNSET means "was not set")
+    [ -f "$BACKUP_FILE" ] || { mkdir -p "$STATE_DIR"; : > "$BACKUP_FILE"; }
+    grep -v "^$1 $2 $3 " "$BACKUP_FILE" > "$BACKUP_FILE.tmp" 2>/dev/null || true
+    echo "$1 $2 $3 $4" >> "$BACKUP_FILE.tmp"
+    mv "$BACKUP_FILE.tmp" "$BACKUP_FILE"
+}
+
+# =============================================================================
+# adb plumbing
+# =============================================================================
+
+ADB_SERIAL=""
+
+# Idempotent adb install (Ubuntu package: 'adb' via android-tools). Only when
+# missing — re-runs must not reinstall (rule 5).
+ensure_adb() {
+    command -v adb >/dev/null 2>&1 && return 0
+    log "adb not found - installing (android-tools)..."
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y adb >/dev/null 2>&1 \
+        || die "apt install adb failed - run: sudo apt install adb"
+}
+
+adb_server() { adb start-server >/dev/null 2>&1 || true; }
+
+# Target-device form of adb; only valid after ensure_device.
+# Device lesson: a half-dead wireless socket (phone dozed, Wi-Fi blip) makes
+# adb clients block forever - every call gets a timeout with hard kill. On
+# failure the connection is marked stale so ensure_device reconnects.
+ADB_STALE=false
+adbx() {
+    if [ "$ADB_STALE" = true ]; then return 1; fi
+    local rc=0
+    timeout -k 2 20 adb -s "$ADB_SERIAL" "$@" </dev/null || rc=$?
+    if [ $rc -ge 124 ]; then
+        ADB_STALE=true
+        err "adb call timed out ($*) - phone may be dozing or Wireless debugging off"
+    fi
+    return $rc
+}
+
+# True if `adb devices` lists $1 with state "device". awk, not grep: the
+# separator between serial and state is a literal tab (easy to lose in edits).
+# </dev/null + file output: never let a daemon hold the caller's pipe.
+device_listed() {
+    local f
+    f=$(mktemp)
+    adb devices >"$f" 2>&1 </dev/null || true
+    awk -v s="$1" '$1==s && $2=="device" {fnd=1} END{exit !fnd}' "$f"
+    local rc=$?
+    rm -f "$f"
+    return $rc
+}
+
+strip_cr() { tr -d '\r'; }
+
+devcfg_get()     { adbx shell device_config get "$1" "$2" 2>/dev/null | strip_cr; }
+settings_get()   { adbx shell settings get "$1" "$2" 2>/dev/null | strip_cr; }
+
+device_root_ok() {
+    [ "$(adbx "su -c id -u" 2>/dev/null | strip_cr)" = "0" ]
+}
+
+# Parse `adb mdns services`: prints "<channel>\t<service>\t<ip:port>".
+# Only lines whose last field has host:port are usable.
+# Device lesson: inside proot, `adb mdns services` can block forever, and a
+# killed adb still leaves the daemon holding the caller's stdout pipe - so
+# redirect to a file (never a pipe), use timeout with a hard kill (-k), and
+# stdin from /dev/null. Same armor on every adb call that may block.
+mdns_ports() {
+    local kind="$1" svc f p
+    case "$kind" in
+        connect) svc='_adb-tls-connect\._tcp' ;;
+        pairing) svc='_adb-tls-pairing\._tcp' ;;
+    esac
+    f=$(mktemp)
+    timeout -k 2 5 adb mdns services >"$f" 2>&1 </dev/null || true
+    p=$(awk -v svc="$svc" '$0 ~ svc && $NF ~ /:/ { q=$NF; sub(/.*:/,"",q); print q; exit }' "$f")
+    rm -f "$f"
+    [ -n "$p" ] && { echo "$p"; return 0; }
+    return 1
+}
+
+# Wireless debugging connect ports rotate on every toggle/reboot; pairing
+# persists, so discovery via mdns usually works after the first run.
+discover_connect_port() {
+    local p
+    for _ in 1 2; do
+        p=$(mdns_ports connect)
+        [ -n "$p" ] && { echo "$p"; return 0; }
+        sleep 1
+        adb_server
+    done
+    return 1
+}
+
+pair_flow() {
+    local port code
+    if [ -n "$PAIR_PORT" ]; then
+        port="$PAIR_PORT"
+        [ -n "$PAIR_CODE" ] || die "--pair-port given but no --pair-code"
+        code="$PAIR_CODE"
+    else
+        if [ "$QUIET" = true ]; then
+            err "Pairing needed but running with --quiet (use --pair-port/--pair-code)"
+            return 1
+        fi
+        echo "Wireless debugging > 'Pair device with pairing code' shows a port + 6-digit code."
+        echo "Tip: split the screen (or float this app over Settings) so the dialog stays up —"
+        echo "the pairing port closes the instant the dialog is dismissed."
+        read -rp "Pairing port: " port
+        read -rp "Pairing code: " code
+        [ -n "$port" ] && [ -n "$code" ] || { err "Empty port/code"; return 1; }
+    fi
+    log "Pairing with 127.0.0.1:$port ..."
+    timeout -k 2 15 adb pair "127.0.0.1:$port" "$code" </dev/null || { err "Pairing failed (code/port refresh when the dialog closes)"; return 1; }
+    log "Paired."
+}
+
+connect_flow() {
+    ensure_adb
+    adb_server
+    local port
+
+    # Already connected? (state or adb devices) — done.
+    local saved serial
+    saved="$(state_get ADB_SERIAL)"
+    if [ -n "$saved" ] && device_listed "$saved"; then
+        ADB_SERIAL="$saved"
+        log "Already connected: $ADB_SERIAL"
+        return 0
+    fi
+
+    if [ -n "$CONNECT_PORT" ]; then
+        port="$CONNECT_PORT"
+    else
+        port=$(discover_connect_port) || {
+            log "mdns discovery found no connect port (phone's wireless debugging may be off)"
+            if [ "$QUIET" = true ]; then
+                err "Re-run with --connect-port N (shown in Developer options > Wireless debugging)"
+                return 1
+            fi
+            echo "Keep the Wireless debugging screen open - the port rotates when it's toggled."
+            read -rp "Connect port (from Wireless debugging screen): " port
+            [ -n "$port" ] || { err "No port given"; return 1; }
+        }
+    fi
+
+    log "Connecting to 127.0.0.1:$port ..."
+    local conn_out
+    conn_out=$(timeout -k 2 10 adb connect "127.0.0.1:$port" </dev/null 2>&1 || true)
+    if ! printf '%s' "$conn_out" | grep -qi "connected"; then
+        log "Connect refused — pairing may be needed first"
+        if [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
+            err "Run 'adb-ai' interactively to pair (or use --pair-port/--pair-code)"
+            return 1
+        fi
+        pair_flow || return 1
+        timeout -k 2 10 adb connect "127.0.0.1:$port" </dev/null >/dev/null 2>&1 || true
+    fi
+
+    serial="127.0.0.1:$port"
+    if device_listed "$serial"; then
+        ADB_SERIAL="$serial"
+        state_set ADB_SERIAL "$serial"
+        log "Connected: $ADB_SERIAL"
+        return 0
+    fi
+
+    # Port may already have rotated again; accept any single device adb sees.
+    serial=$(adb devices 2>/dev/null | awk '$2=="device"{print $1; exit}')
+    if [ -n "$serial" ]; then
+        ADB_SERIAL="$serial"
+        state_set ADB_SERIAL "$serial"
+        log "Connected: $ADB_SERIAL"
+        return 0
+    fi
+    err "Could not connect (is Wireless debugging still on?)"
+    return 1
+}
+
+ensure_device() {
+    if [ "$ADB_STALE" = true ]; then
+        adb disconnect >/dev/null 2>&1 </dev/null || true
+        ADB_SERIAL=""
+        ADB_STALE=false
+        connect_flow || return 1
+    fi
+    if [ -n "$ADB_SERIAL" ] && device_listed "$ADB_SERIAL"; then
+        return 0
+    fi
+    connect_flow
+}
+
+# =============================================================================
+# Tier 0 — read-only info
+# =============================================================================
+
+top_pss() { # $1 = how many entries (default 12)
+    # Handles both dumpsys formats: AOSP "12,345 kB: pkg" and Samsung
+    # "12,345K: pkg" (device-verified on SM-S942U1: uppercase K, no space,
+    # name is field 2). System-critical processes are excluded.
+    adbx shell dumpsys meminfo 2>/dev/null | awk '
+        /^Total PSS by process:/ { on=1; next }
+        /^Total PSS by/ { on=0 }   # next section (OOM adjustment etc.) — stop
+        on && /: / {
+            gsub(/,/, "")
+            if ($2 ~ /^[0-9]+K?kb?:$/ && $3 != "") {
+                # AOSP: kb is field 2 ("12345 kB:"), name field 3
+                kb=$2; pkg=$3
+            } else if ($2 ~ /^[0-9]+K:$/ && $3 == "") {
+                # Samsung: "12345K:" is field 1, name field 2 — shifted
+                # (fields merge), so handle via explicit re-split below
+                next
+            } else if ($1 ~ /^[0-9]+K:$/) {
+                kb=$1; pkg=$2
+                sub(/K:$/, "", kb)
+            } else next
+            sub(/\(.*/, "", pkg)
+            if (pkg !~ /^[A-Za-z0-9._-]+$/) next
+            if (pkg == "TOTAL") next
+            # never suggest killing the things that keep this phone alive
+            if (pkg ~ /^(android\.|system|com\.termux|freebuff)/) next
+            if (pkg ~ /^com\.android\.(systemui|phone|bluetooth|nfc|inputmethod|launcher|system)/) next
+            if (pkg ~ /^com\.samsung\.android\.(wallpaper|system)/) next
+            base=pkg; sub(/:.*/, "", base)
+            seen[base] += kb
+        }
+        END { for (p in seen) printf "%10d %s\n", seen[p], p }' \
+        | sort -rn | head -"${1:-12}"
+}
+
+tier0_run() {
+    ensure_device || return 1
+    local memt mema swt swf
+    # All captures failure-tolerant: an info screen must never kill the run
+    # (/proc/swaps is SELinux-blocked from adb shell on many phones - use
+    # meminfo's SwapTotal/SwapFree instead).
+    memt=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^MemTotal:/{print $2; exit}') || true
+    mema=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^MemAvailable:/{print $2; exit}') || true
+    swt=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^SwapTotal:/{print $2; exit}') || true
+    swf=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^SwapFree:/{print $2; exit}') || true
+    echo
+    echo "Device memory:"
+    [ -n "$memt" ] && echo "  total:     $(awk -v k="$memt" 'BEGIN{printf "%.1f GB", k/1048576}')"
+    [ -n "$mema" ] && echo "  available: $(awk -v k="$mema" 'BEGIN{printf "%.1f GB", k/1048576}')"
+    if [ -n "$swt" ] && [ "$swt" != "0" ]; then
+        awk -v t="$swt" -v f="$swf" 'BEGIN{printf "  swap:      %0.1f / %0.1f GB used\n", (t-f)/1048576, t/1048576}'
+    fi
+    echo
+    echo "Swap/zram:"
+    if [ -n "$swt" ] && [ "$swt" != "0" ]; then
+        echo "  zram active (see swap line above; per-device detail needs root)"
+    else
+        echo "  (none active)"
+    fi
+    echo
+    echo "Top PSS consumers (system processes excluded):"
+    top_pss 12 | sed 's/^/  /' || echo "  (dumpsys failed)"
+    echo
+}
+
+# =============================================================================
+# Tier 1 — transient kills (safe)
+# =============================================================================
+
+pkg_installed() { adbx shell pm list packages 2>/dev/null | strip_cr | grep -q "^package:$1$"; }
+
+force_stop() { adbx shell am force-stop "$1" >/dev/null 2>&1 && log "force-stopped: $1" || err "force-stop failed: $1"; }
+
+kill_list_run() {
+    local p n=0
+    for p in "${KILL_PACKAGES[@]}"; do
+        pkg_installed "$p" && n=$((n+1))
+    done
+    [ "$n" -eq 0 ] && { log "Kill list: no packages installed"; return 0; }
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        read -rp "Force-stop $n kill-list package(s) now? [Y/n] " a
+        case "$a" in [Nn]*) return 0 ;; esac
+    fi
+    for p in "${KILL_PACKAGES[@]}"; do
+        pkg_installed "$p" && force_stop "$p"
+    done
+}
+
+top_picker_run() {
+    [ "$QUIET" = true ] && return 0
+    local list p
+    list=$(top_pss 12) || return 0
+    [ -z "$list" ] && return 0
+    echo
+    echo "Top memory consumers:"
+    echo "$list" | sed 's/^/  /'
+    while true; do
+        read -rp "Force-stop package (blank = skip): " p
+        [ -z "$p" ] && break
+        case "$p" in *[!A-Za-z0-9._-]*) echo "Not a package name"; continue ;; esac
+        force_stop "$p"
+    done
+}
+
+tier1_run() {
+    ensure_device || return 1
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        echo "Tier 1 is transient: killed processes return when apps relaunch."
+        read -rp "Proceed (am kill-all + trim caches)? [Y/n] " a
+        case "$a" in [Nn]*) return 0 ;; esac
+    fi
+    log "am kill-all (drop cached background processes)..."
+    adbx shell am kill-all >/dev/null 2>&1 || err "am kill-all failed"
+    log "pm trim-caches..."
+    adbx shell pm trim-caches 128G >/dev/null 2>&1 || err "pm trim-caches failed"
+    kill_list_run
+    top_picker_run
+}
+
+# =============================================================================
+# Tier 2 — persistent tuning (originals saved, revert restores)
+# =============================================================================
+
+# Apply one device_config change: save original (or UNSET), then put.
+devcfg_apply() { # ns key newvalue description
+    local ns="$1" key="$2" val="$3" desc="$4" old
+    old=$(devcfg_get "$ns" "$key")
+    backup_add devcfg "$ns" "$key" "${old:-UNSET}"
+    adbx shell device_config put "$ns" "$key" "$val" >/dev/null 2>&1 || { err "device_config put failed: $ns/$key"; return 1; }
+    log "  $desc: ${old:-<unset>} -> $val"
+}
+
+settings_apply() { # ns key newvalue description
+    local ns="$1" key="$2" val="$3" desc="$4" old
+    old=$(settings_get "$ns" "$key")
+    backup_add setting "$ns" "$key" "${old:-UNSET}"
+    adbx shell settings put "$ns" "$key" "$val" >/dev/null 2>&1 || { err "settings put failed: $ns/$key"; return 1; }
+    log "  $desc: ${old:-<unset>} -> $val"
+}
+
+phantom_off() {
+    local old
+    old=$(devcfg_get activity_manager max_phantom_processes)
+    # set_sync_disabled_for_tests stops Google's server-side config push from
+    # undoing us; only mark it as ours if it wasn't already disabled.
+    if [ "$(adbx shell device_config get_sync_disabled_for_tests 2>/dev/null | strip_cr)" != "persistent" ]; then
+        adbx shell device_config set_sync_disabled_for_tests persistent >/dev/null 2>&1 \
+            || err "could not disable device_config sync"
+        state_set SAVED_SYNC_DISABLED 1
+    fi
+    backup_add devcfg activity_manager max_phantom_processes "${old:-UNSET}"
+    adbx shell device_config put activity_manager max_phantom_processes 2147483647 >/dev/null 2>&1 \
+        || { err "phantom killer: put failed"; return 1; }
+    if [ "$(devcfg_get activity_manager max_phantom_processes)" = "2147483647" ]; then
+        log "  phantom process killer: disabled (was ${old:-<unset>})"
+    else
+        err "phantom killer: value did not stick (Google sync may still be fighting)"
+    fi
+}
+
+tier2_run() {
+    ensure_device || return 1
+    if [ "$FORCE" = false ]; then
+        if [ "$QUIET" = true ]; then
+            err "Tier 2 changes persistent settings — re-run with --force for non-interactive use"
+            return 1
+        fi
+        echo "Tier 2 writes persistent settings (originals saved; 'adb-ai revert' restores):"
+        echo "  • phantom process killer off (stops Android 12+ killing proot children)"
+        echo "  • max_cached_processes = $MAX_CACHED_PROCESSES"
+        echo "  • background_process_limit = $BACKGROUND_PROCESS_LIMIT"
+        echo "  • animations off"
+        read -rp "Proceed? [y/N] " a
+        case "$a" in [Yy]*) ;; *) return 0 ;; esac
+    fi
+    log "Tier 2:"
+    phantom_off
+    devcfg_apply activity_manager max_cached_processes "$MAX_CACHED_PROCESSES" "cached process cap"
+    settings_apply global background_process_limit "$BACKGROUND_PROCESS_LIMIT" "background process limit"
+    settings_apply global window_animation_scale 0.0 "window animation"
+    settings_apply global transition_animation_scale 0.0 "transition animation"
+    settings_apply global animator_duration_scale 0.0 "animator duration"
+    log "Done. Revert anytime with 'adb-ai revert'."
+}
+
+# =============================================================================
+# Tier 3 — root-gated (never runs silently)
+# =============================================================================
+
+tier3_run() {
+    ensure_device || return 1
+    if ! device_root_ok; then
+        err "No root on the phone (su failed) — tier 3 unavailable"
+        return 1
+    fi
+    if [ "$FORCE" = false ]; then
+        if [ "$QUIET" = true ]; then
+            err "Tier 3 needs root and confirmation — re-run with --force"
+            return 1
+        fi
+        echo "Tier 3 (root):"
+        echo "  1) drop_caches (sync; echo 3 > /proc/sys/vm/drop_caches)"
+        echo "  2) zram idle + recompact (defragment compressed pages)"
+        read -rp "Choice [blank = cancel]: " c
+        case "$c" in
+            1) adbx "su -c 'sync; echo 3 > /proc/sys/vm/drop_caches'" >/dev/null 2>&1 \
+                && log "drop_caches done" || err "drop_caches failed" ;;
+            2) adbx "su -c 'echo 1 > /sys/block/zram0/idle'" >/dev/null 2>&1 || true
+                adbx "su -c 'echo 1 > /sys/block/zram0/recompact'" >/dev/null 2>&1 \
+                && log "zram recompact done" || err "zram recompact failed (kernel may not support it)" ;;
+            *) return 0 ;;
+        esac
+        return 0
+    fi
+    # --force path: do the safe-for-root subset (drop_caches is transient).
+    adbx "su -c 'sync; echo 3 > /proc/sys/vm/drop_caches'" >/dev/null 2>&1 \
+        && log "drop_caches done" || err "drop_caches failed"
+    adbx "su -c 'echo 1 > /sys/block/zram0/idle'" >/dev/null 2>&1 || true
+}
+
+# =============================================================================
+# Revert + status
+# =============================================================================
+
+cmd_revert() {
+    ensure_device || return 1
+    if [ ! -s "$BACKUP_FILE" ]; then
+        log "Nothing to revert ($BACKUP_FILE empty)"
+        return 0
+    fi
+    if [ "$FORCE" = false ]; then
+        if [ "$QUIET" = true ]; then
+            err "Revert changes persistent settings — re-run with --force for non-interactive use"
+            return 1
+        fi
+        echo "Saved originals to restore:"
+        sed 's/^/  /' "$BACKUP_FILE"
+        read -rp "Revert all? [y/N] " a
+        case "$a" in [Yy]*) ;; *) return 0 ;; esac
+    fi
+    local kind ns key val
+    while read -r kind ns key val; do
+        [ -z "$kind" ] && continue
+        case "$kind" in
+            devcfg)
+                if [ "$val" = "UNSET" ]; then
+                    adbx shell device_config delete "$ns" "$key" >/dev/null 2>&1 \
+                        || err "could not delete $ns/$key (device_config delete unsupported?)"
+                else
+                    adbx shell device_config put "$ns" "$key" "$val" >/dev/null 2>&1 || err "revert failed: $ns/$key"
+                fi
+                log "  restored device_config $ns/$key = $val" ;;
+            setting)
+                adbx shell settings put "$ns" "$key" "$val" >/dev/null 2>&1 || err "revert failed: $ns/$key"
+                log "  restored settings $ns/$key = $val" ;;
+        esac
+    done < "$BACKUP_FILE"
+    if [ "$(state_get SAVED_SYNC_DISABLED)" = "1" ]; then
+        adbx shell device_config set_sync_disabled_for_tests none >/dev/null 2>&1 \
+            || err "could not re-enable device_config sync"
+        log "  re-enabled device_config sync"
+        state_set SAVED_SYNC_DISABLED 0
+    fi
+    : > "$BACKUP_FILE"
+    log "Revert complete."
+}
+
+cmd_status() {
+    ensure_device || return 1
+    local memt mema phantom bpl frozen
+    memt=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^MemTotal:/{print $2; exit}')
+    mema=$(adbx shell cat /proc/meminfo 2>/dev/null | awk '/^MemAvailable:/{print $2; exit}')
+    phantom=$(devcfg_get activity_manager max_phantom_processes)
+    bpl=$(settings_get global background_process_limit)
+    frozen=$(adbx shell pm list packages -d 2>/dev/null | grep -c "^package:" || true)
+    echo
+    echo "Device   : $ADB_SERIAL"
+    [ -n "$memt" ] && [ -n "$mema" ] && echo "Memory   : $(awk -v a="$mema" -v t="$memt" 'BEGIN{printf "%.1f / %.1f GB free", a/1048576, t/1048576}')"
+    echo "Phantom  : max_phantom_processes = ${phantom:-?} (2147483647 = disabled)"
+    [ "$(state_get SAVED_SYNC_DISABLED)" = "1" ] && echo "           device_config sync disabled by adb-ai"
+    [ -n "$bpl" ] && [ "$bpl" != "null" ] && echo "BkgLimit : background_process_limit = $bpl"
+    echo "Frozen   : $frozen package(s) disabled (pm list -d)"
+    # Drift check: Google sync or OTA can undo the phantom-killer fix.
+    if [ "$(state_get SAVED_SYNC_DISABLED)" = "1" ] && [ "$phantom" != "2147483647" ]; then
+        if [ "$QUIET" = true ]; then
+            err "Phantom-killer setting drifted ($phantom) — run 'adb-ai mem' > tier 2 to re-apply"
+        elif [ "$FORCE" = true ]; then
+            log "Phantom-killer setting drifted — re-applying"
+            phantom_off
+        else
+            read -rp "Phantom-killer setting drifted ($phantom). Re-apply now? [Y/n] " a
+            case "$a" in [Nn]*) ;; *) phantom_off ;; esac
+        fi
+    fi
+    echo
+}
+
+# =============================================================================
+# apps command — kill list + freeze management
+# =============================================================================
+
+apps_freeze() { # pkg
+    adbx shell pm disable-user --user 0 "$1" >/dev/null 2>&1 \
+        && log "frozen: $1" || err "freeze failed: $1"
+}
+apps_unfreeze() {
+    adbx shell pm enable "$1" >/dev/null 2>&1 \
+        && log "unfrozen: $1" || err "unfreeze failed: $1"
+}
+
+apps_run() {
+    ensure_device || return 1
+    case "$APP_MODE" in
+        list)
+            echo "Kill list (from $CONFIG_FILE):"
+            local p
+            for p in "${KILL_PACKAGES[@]}"; do
+                if pkg_installed "$p"; then echo "  $p (installed)"; else echo "  $p (not installed)"; fi
+            done ;;
+        top) tier0_run ;;
+        stop)
+            local p
+            for p in "${APP_PKGS[@]}"; do force_stop "$p"; done ;;
+        freeze)
+            [ "$FORCE" = true ] || { err "Freeze is persistent — add --force (unfreeze with 'adb-ai apps --unfreeze PKG')"; return 1; }
+            local p; for p in "${APP_PKGS[@]}"; do apps_freeze "$p"; done ;;
+        unfreeze)
+            local p; for p in "${APP_PKGS[@]}"; do apps_unfreeze "$p"; done ;;
+        "")
+            while true; do
+                echo
+                echo "Apps:"
+                echo "  1) Kill list now (force-stop)"
+                echo "  2) Top memory consumers"
+                echo "  3) Freeze a package (pm disable-user)"
+                echo "  4) Unfreeze a package"
+                echo "  q) Back"
+                read -rp "Choice: " c
+                case "$c" in
+                    1) kill_list_run; top_picker_run ;;
+                    2) tier0_run ;;
+                    3) read -rp "Package: " p; [ -n "$p" ] && apps_freeze "$p" ;;
+                    4) read -rp "Package: " p; [ -n "$p" ] && apps_unfreeze "$p" ;;
+                    q|Q|"") break ;;
+                esac
+            done ;;
+        *) die "Unknown apps mode: $APP_MODE" ;;
+    esac
+}
+
+# =============================================================================
+# mem menu + main dispatch
+# =============================================================================
+
+mem_run() {
+    if [ "$T0$T1$T2$T3" != "falsefalsefalsefalse" ]; then
+        [ "$T0" = true ] && tier0_run
+        [ "$T1" = true ] && tier1_run
+        [ "$T2" = true ] && tier2_run
+        [ "$T3" = true ] && tier3_run
+        return 0
+    fi
+    while true; do
+        echo
+        echo "Android memory:"
+        echo "  0) Info (top consumers, free RAM, swap/zram)"
+        echo "  1) Tier 1 — safe kills (kill-all, kill list, trim caches)"
+        echo "  2) Tier 2 — persistent tuning (phantom killer off, caps)"
+        echo "  3) Tier 3 — root (drop_caches, zram)"
+        echo "  4) Revert all saved changes"
+        echo "  5) Status"
+        echo "  q) Quit"
+        read -rp "Choice: " c
+        case "$c" in
+            0) tier0_run ;;
+            1) tier1_run ;;
+            2) tier2_run ;;
+            3) tier3_run ;;
+            4) cmd_revert ;;
+            5) cmd_status ;;
+            q|Q|"") break ;;
+        esac
+    done
+}
+
+case "$CMD" in
+    connect) connect_flow && cmd_status ;;
+    status)  cmd_status ;;
+    mem)     mem_run ;;
+    apps)    apps_run ;;
+    revert)  cmd_revert ;;
+esac

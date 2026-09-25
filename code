@@ -298,6 +298,16 @@ ollama create "$N" -f "$TMP"
 rm -f "$TMP"
 }
 
+#adb-ai: wireless adb to the phone + Android memory tiers. Runs INSIDE Ubuntu
+#(it refuses to run in Termux); launch the repo copy by absolute path, no PATH
+#games (same lesson as the opencode/freebuff launches).
+adb_ai(){
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "
+if command -v adb-ai >/dev/null 2>&1; then adb-ai;
+elif [ -x '/root/projects/$PROJECT_NAME/adb-ai' ]; then '/root/projects/$PROJECT_NAME/adb-ai';
+else echo 'adb-ai not found in Ubuntu - update the repo there (git pull) first'; fi"
+}
+
 restart_ollama(){ pkill ollama || true; nohup ollama serve >/dev/null 2>&1 & sleep 3; }
 
 bench_model(){
@@ -375,7 +385,8 @@ echo "8) Clear Cache"
 echo "9) Freebuff"
 echo "10) Regen OpenCode Config"
 echo "11) Benchmark Model"
-echo "12) Quit"
+echo "12) Android Memory (adb-ai)"
+echo "13) Quit"
 read -p "Choice: " m
 case "$m" in
 1) launch;;
@@ -389,5 +400,6 @@ case "$m" in
 9) freebuff_launch;;
 10) regen_opencode_config;;
 11) bench_model;;
+12) adb_ai;;
 *) exit 0;;
 esac

@@ -47,6 +47,7 @@ Android
 | `update-ai` | Termux | Install/update everything; creates `~/.ai-env.conf` |
 | `doctor-ai` | Termux | Health checks: installs, server, API reachability, versions |
 | `clear-ai-cache` | Termux | Tiered cache cleanup (Tier 1 safe / Tier 2 destructive) |
+| `adb-ai` | Ubuntu (proot) | Wireless adb to the phone itself + Android memory tiers: kill hogs (Facebook/Instagram), phantom-killer off, revert; run `ubuntu` first |
 | `ubuntu` | Termux | Shell into the Ubuntu container |
 | `aider-ubuntu` | Termux | Run aider with args, e.g. `aider-ubuntu --model qwen --chat-mode ask` |
 | `add_models.sh` | Termux | One-shot `ollama create` for the Modelfiles in this repo |
@@ -72,7 +73,10 @@ Android
     decimals, plus the model's actual loaded RAM from Ollama's `/api/ps` —
     weights + KV cache at the active context; bench.py / bench_all.py remain
     the deep benchmarks)
-12. Quit
+12. Android Memory (adb-ai) — launches `adb-ai` inside Ubuntu: wireless adb to
+    the phone, tiered Android memory reduction (Tier 0 info / 1 safe kills /
+    2 persistent tuning incl. phantom-killer off / 3 root-gated, plus revert)
+13. Quit
 
 ## Configuration
 
@@ -94,6 +98,12 @@ Android
 | `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
 | `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
+
+`adb-ai` has its own config, `~/.adb-ai.conf`, inside the **Ubuntu** home
+(Termux's `~/.ai-env.conf` is not visible from the container), seeded on first
+run: `KILL_PACKAGES` (tier-1 force-stop list, defaults include the Facebook
+trio + Instagram), `MAX_CACHED_PROCESSES` (default 16),
+`BACKGROUND_PROCESS_LIMIT` (default 2). State/backups: `~/.config/adb-ai/`.
 
 ### Choosing a model
 
@@ -122,6 +132,30 @@ Installed models:
 - `clear-ai-cache -n / -f / -q / -h` — hide size report, skip prompts, quiet, help
   (default shows sizes and prompts for every destructive step; your last-used model
   is always kept)
+
+## Android memory (`adb-ai`)
+
+Run inside Ubuntu (`ubuntu`, then `adb-ai` — or just use `code` → 12). It pairs
+wireless adb **to the phone the container runs on** (loopback) and frees Android
+RAM — the same RAM Ollama/aider need:
+
+```
+adb-ai                  # pair once, connect, status
+adb-ai mem              # tiered menu: 0 info / 1 kills / 2 persistent / 3 root / revert
+adb-ai apps --top       # biggest Android memory consumers
+adb-ai mem --t1         # kill list (Facebook, Instagram, …) + cached-process kill
+adb-ai revert           # restore every Tier-2 original
+```
+
+- First pairing: on the phone open *Developer options → Wireless debugging →
+  Pair device with pairing code* and **split the screen** (or float the app over
+  Settings) — the pairing port closes the instant the dialog is dismissed.
+- Tier 2 disables Android 12+'s **phantom process killer** (the thing that
+  reaps Termux/proot children mid-run) and saves every original; `adb-ai
+  revert` restores them.
+- Config: `~/.adb-ai.conf` inside the Ubuntu home (kill list, caps).
+- Device-verified result on a 12 GB S26: MemAvailable 2.4 → 5.1 GB, zram swap
+  100% → 50% after Tier 1.
 
 ## Models
 
@@ -206,6 +240,13 @@ fills it fast. First edit/command triggers a permission prompt; choose
 allow-always for trusted projects.
 
 ## Live-testing notes
+
+- **adb-ai — fully device-verified on SM-S942U1 (S26)**: pairing, connect,
+  Tier 0 (Samsung dumpsys format parsed), Tier 1 (MemAvailable 2.4→5.1 GB,
+  zram 100%→50%), Tier 2 (phantom killer off, verified via device_config get;
+  backups + revert path written), Tier 3 error path (no root), status. Also
+  proved: an adb client in proot must not hold the caller's stdout pipe (redirect
+  to files + `timeout -k`), and Samsung's meminfo section is `380,893K: pkg`.
 
 Paths proven in review (logic verified, syntax-checked, config output
 JSON-validated) but **not yet run on device**:
