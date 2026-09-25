@@ -21,7 +21,11 @@ nothing about the host beyond Termux + Android storage access.
   and alone can keep a 7b model from loading on a 12 GB phone — plus
   `OLLAMA_KEEP_ALIVE=-1` (model reloads cost minutes on a phone; idle RAM is
   cheaper than cold reloads), `OLLAMA_LOAD_TIMEOUT=15m` (Ollama's 5m default is
-  tight for phone flash), `OLLAMA_CONTEXT_LENGTH`), ollama CLI chat, GGUF
+  tight for phone flash), `OLLAMA_CONTEXT_LENGTH`, and `OLLAMA_MODELS` pinned
+  explicitly: an ollama **package upgrade can silently change the binary's
+  default data dir**, making every model vanish from `ollama list` while
+  `~/.ollama/models` is still full — device-seen; env changes only reach a
+  running server via restart), ollama CLI chat, GGUF
   import, benchmarks, and menu option 8 = one proot session running
   `code-ubuntu`. It no longer launches container apps through wrapped
   `bash -lc` strings — that wrapper class produced the repo's worst bugs
