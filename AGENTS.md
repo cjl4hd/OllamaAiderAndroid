@@ -15,25 +15,31 @@ nothing about the host beyond Termux + Android storage access.
 - `update-ai` — the installer/updater. Runs in Termux host only. Creates
   `~/.ai-env.conf`, installs/updates Ubuntu proot, Python/uv/Aider (in Ubuntu),
   Ollama (host), OpenCode (in Ubuntu, optional), storage symlinks, bin links.
-- `code` — interactive launcher. Model picker, project picker, GGUF import, chat,
-  delegates to update-ai / doctor-ai / clear-ai-cache, launches OpenCode (with a
-  generated Ollama provider config + `--model ollama/<name>`, menu option 10
-  force-regenerates that config) and Freebuff. Sets Ollama env tuning (flash
-  attention, q8_0 KV cache, single loaded model, `OLLAMA_NUM_PARALLEL=1` —
-  Ollama's default of 4 multiplies KV-cache RAM 4x and alone can keep a 7b model
-  from loading on a 12 GB phone — plus `OLLAMA_KEEP_ALIVE=-1` (model reloads
-  cost minutes on a phone; idle RAM is cheaper than cold reloads) and
-  `OLLAMA_LOAD_TIMEOUT=15m` (Ollama's 5m default is tight for phone flash) —
-  and `OLLAMA_CONTEXT_LENGTH`) for phone-class
-  hardware. The generated OpenCode config must include `limit.output` for every
-  model: OpenCode's schema requires it, and a schema-invalid config kills the
-  TUI silently at startup (no error, no render). Menu option 11 benchmarks a
-  model via the Ollama API (whole-run tok/s); bench.py/bench_all.py are the
-  deeper llama.cpp benchmarks.
+- `code` — interactive Termux (host) launcher, host-only responsibilities:
+  Ollama env tuning (flash attention, q8_0 KV cache, single loaded model,
+  `OLLAMA_NUM_PARALLEL=1` — Ollama's default of 4 multiplies KV-cache RAM 4x
+  and alone can keep a 7b model from loading on a 12 GB phone — plus
+  `OLLAMA_KEEP_ALIVE=-1` (model reloads cost minutes on a phone; idle RAM is
+  cheaper than cold reloads), `OLLAMA_LOAD_TIMEOUT=15m` (Ollama's 5m default is
+  tight for phone flash), `OLLAMA_CONTEXT_LENGTH`), ollama CLI chat, GGUF
+  import, benchmarks, and menu option 8 = one proot session running
+  `code-ubuntu`. It no longer launches container apps through wrapped
+  `bash -lc` strings — that wrapper class produced the repo's worst bugs
+  (PATH-export TUI wedge, brace-group parse error) and is gone.
+- `code-ubuntu` — the Ubuntu-side launcher: model/project pickers (via the
+  Ollama HTTP API — works from the container, no host CLI needed), aider /
+  opencode / freebuff launches by absolute path with no PATH exports,
+  OpenCode config generation (writes the Ubuntu home natively), adb-ai
+  delegation, pre-launch quick-clean hook. Runs both via `code` option 8 AND
+  bare in an `ubuntu` shell (linked into /usr/local/bin by update-ai).
+  Subcommands: aider|opencode|freebuff|regen-oc|mem|status. The generated
+  OpenCode config must include `limit.output` for every model: OpenCode's
+  schema requires it, and a schema-invalid config kills the TUI silently at
+  startup (no error, no render).
 - `doctor-ai` — health checks and version report.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.
-- `adb-ai` — runs inside proot Ubuntu only: pairs/connects wireless adb to the
+- `adb-ai` and `code-ubuntu` — run inside proot Ubuntu only: adb-ai pairs/connects wireless adb to the
   phone itself over loopback, then reduces **Android** memory in tiers (0 info,
   1 kill list incl. Facebook/Instagram + cached-process kills, 2 persistent
   device_config/settings with saved originals + `revert` — phantom process

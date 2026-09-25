@@ -64,6 +64,8 @@ Environment (via ~/.ai-env.conf):
                         low: ask (prompt), always, or never (default: ask)
   ADB_AI_LOW_RAM_GB   Free-RAM threshold that triggers the pre-launch clean
                         (default: 4)
+  PROJECTS_DIR        Project dir INSIDE Ubuntu for code-ubuntu launchers
+                        (default: ~/projects)
   OLLAMA_KEEP_ALIVE    How long a model stays loaded after use (default: -1 =
                         forever). Reloads cost minutes on a phone; override to
                         e.g. 30m only if a big model squeezes RAM.
@@ -514,20 +516,26 @@ ln -sfn "$TERMUX_HOME" "$UBUNTU_HOME/termux-home"
 ln -sfn "$ANDROID_HOME" "$UBUNTU_HOME/android-home"
 
 # Bin links for update-ai / doctor-ai / clear-ai-cache
-chmod +x "$PROJECT_DIR_HOST/ubuntu" "$PROJECT_DIR_HOST/code" "$PROJECT_DIR_HOST/update-ai" "$PROJECT_DIR_HOST/doctor-ai" "$PROJECT_DIR_HOST/clear-ai-cache" "$PROJECT_DIR_HOST/adb-ai"
+cd "$PROJECT_DIR_HOST"
+for f in ubuntu code update-ai doctor-ai clear-ai-cache adb-ai code-ubuntu; do
+    [ -f "$f" ] && chmod +x "$f"
+done
 ln -sfn "$PROJECT_DIR_HOST/code" "$BIN_DIR/code"
 ln -sfn "$PROJECT_DIR_HOST/update-ai" "$BIN_DIR/update-ai"
 ln -sfn "$PROJECT_DIR_HOST/doctor-ai" "$BIN_DIR/doctor-ai"
 ln -sfn "$PROJECT_DIR_HOST/clear-ai-cache" "$BIN_DIR/clear-ai-cache"
 ln -sfn "$PROJECT_DIR_HOST/ubuntu" "$BIN_DIR/ubuntu"
 
-# adb-ai lives inside Ubuntu (it refuses to run on the host); link the repo
-# copy into Ubuntu's PATH so the bare command works in an 'ubuntu' shell.
+# adb-ai and code-ubuntu live inside Ubuntu (they refuse to run on the host);
+# link the repo copies into Ubuntu's PATH so the bare commands work in an
+# 'ubuntu' shell (code's menu option 8 also relies on the code-ubuntu link).
 if [ -d "$UBUNTU_ROOTFS" ]; then
-    chmod +x "$PROJECT_DIR_HOST/adb-ai" 2>/dev/null || true
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- \
-        ln -sf "$UBUNTU_HOME/projects/$PROJECT_NAME/adb-ai" /usr/local/bin/adb-ai 2>/dev/null \
-        || log "Note: could not link adb-ai into Ubuntu (repo may live in Termux - fine)"
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -c '
+        for s in adb-ai code-ubuntu; do
+            p="/root/projects/'"$PROJECT_NAME"'/$s"
+            [ -f "$p" ] && chmod +x "$p" && ln -sf "$p" "/usr/local/bin/$s"
+        done' 2>/dev/null \
+        || log "Note: could not link Ubuntu-side tools (repo may live in Termux - code option 8 will need the repo in Ubuntu)"
 fi
 
 log "Symlinks updated"

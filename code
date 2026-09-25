@@ -1,6 +1,20 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
+# =============================================================================
+# code — Termux-side launcher (host only).
+#
+# This half owns HOST things: the Ollama server and its env tuning, ollama
+# CLI chat + GGUF import, package updates, benchmarks. Everything that lives
+# inside proot Ubuntu (aider/opencode/freebuff pickers and launches, OpenCode
+# config, adb-ai) belongs to code-ubuntu — reached via menu option 8, which
+# runs ONE proot session with the Ubuntu-side menu. That split exists because
+# host vs container is the repo's #1 bug class (see AGENTS.md rule 1).
+#
+# If you are already in an 'ubuntu' shell, skip this script entirely and run
+# code-ubuntu directly.
+# =============================================================================
+
 CONFIG_FILE="$HOME/.ai-env.conf"
 if [ ! -f "$CONFIG_FILE" ]; then
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,12 +26,6 @@ source "$CONFIG_FILE"
 
 UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
 GGUF_DIR="${GGUF_DIR:-$HOME/storage/shared/Models}"
-
-CONFIG_DIR="$HOME/.config/code"
-LAST_FILE="$CONFIG_DIR/last_model"
-TARGET_DIR="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/projects"
-
-mkdir -p "$CONFIG_DIR"
 
 [ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
@@ -52,9 +60,6 @@ export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
 #Override via OLLAMA_LOAD_TIMEOUT in ~/.ai-env.conf.
 export OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-15m}"
 
-# num_ctx 4096, num_predict 4096, num_thread 4, temperature 0.5 are model options, require 
-#ollama create <model> -f ./Modelfile
-
 start_ollama() {
 if ! pgrep -f "ollama serve" >/dev/null; then
  echo "Starting Ollama..."
@@ -63,28 +68,17 @@ if ! pgrep -f "ollama serve" >/dev/null; then
 fi
 }
 
-#Resolve a binary inside proot Ubuntu without relying on the login shell's
-#PATH: nvm/node installers append to ~/.bashrc AFTER Ubuntu's interactive-only
-#guard, so non-interactive 'bash -lc' never sees them. Check the standard PATH
-#plus the known install dirs. Prints the absolute path, empty if not found.
-ubuntu_which(){
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '
-for c in "/usr/local/bin/$1" "/usr/bin/$1" "/root/.local/bin/$1" "/root/.nvm/versions/node/"*/"bin/$1" "/root/.opencode/bin/$1"; do
- [ -x "$c" ] && { echo "$c"; exit 0; }
-done
-exit 1
-' bash "$1" 2>/dev/null
-}
-
 #Free RAM in GB from /proc/meminfo (Android kernels expose MemAvailable).
 free_ram_gb(){
 awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
 }
 
-#Load installed model names (MODELS) and on-disk sizes in GB (DISKS).
+#Load installed model names (MODELS) and on-disk sizes in GB (DISKS) via the
+#host ollama CLI. Sizes get one decimal each - a missing newline here once
+#merged two models' sizes into one bogus value.
 load_models(){
 mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
-mapfile -t DISKS < <(ollama list|awk 'NR>1{printf "%.1f", $3/1e9}')
+mapfile -t DISKS < <(ollama list|awk 'NR>1{printf "%.1f\n", $3/1e9}')
 }
 
 #One-line descriptor for a model: parameter count, quantization, disk size.
@@ -98,13 +92,12 @@ quant=$(printf '%s\n' "$out" | awk -F': *' '/^  Quantization/{print $2; exit}')
 META=""
 [ -n "$params" ] && META="$params"
 [ -n "$quant" ] && META="$META $quant"
-[ -n "$2" ] && [ "$2" != "0.0" ] && META="$META - ${2}GB disk"
+if [ -n "$2" ] && [ "$2" != "0.0" ]; then META="$META - ${2}GB disk"; fi
+return 0
 }
 
 status() {
 COUNT=$(ollama list | awk 'NR>1'|wc -l)
-LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "None")
-[ "$LAST" = "__CLOUD__" ] && LAST="☁ cloud (opencode)"
 LOADED=$(ollama ps 2>/dev/null | awk 'NR>1{print $1; exit}')
 [ -z "$LOADED" ] && LOADED="none"
 echo "====================================="
@@ -116,7 +109,6 @@ else
  echo "Ollama : Stopped"
 fi
 echo "Models  : $COUNT"
-echo "Last    : $LAST"
 echo "Loaded  : $LOADED"
 echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
 FREE=$(free_ram_gb)
@@ -124,160 +116,41 @@ echo "FreeRAM : ${FREE:-?}GB"
 echo
 }
 
-select_model(){
-#Optional "cloud" arg appends an OpenCode-cloud entry after the local models
-#(opencode only; aider/chat are local-only). Cloud is kept LAST so the default
-#choice stays the first local model. Sentinel __CLOUD__ = launch opencode bare
-#(its own default model, e.g. nemotron-3-ultra-free).
-local with_cloud="${1:-}"
-local last="$(cat "$LAST_FILE" 2>/dev/null)"
+#Host-side model picker for chat (ollama CLI - no container involvement).
+select_model_host(){
+local last="" mark
 load_models
-[ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ] && { echo "No models."; exit 1; }
+[ ${#MODELS[@]} -eq 0 ] && { echo "No models. Import one first (menu 2)."; return 1; }
 FREE=$(free_ram_gb)
 [ -n "$FREE" ] && echo "Free RAM: ${FREE}GB (model + its context KV cache must fit)"
 echo "Installed models:"
 for i in "${!MODELS[@]}"; do
  mark=""
- [ "${MODELS[$i]}" = "$last" ] && mark=" ⭐"
  model_meta "${MODELS[$i]}" "${DISKS[$i]:-}"
- printf "%2d) %-38s %s%s\n" $((i+1)) "${MODELS[$i]}" "$META" "$mark"
+ printf "%2d) %-38s %s\n" $((i+1)) "${MODELS[$i]}" "$META"
 done
-local n=${#MODELS[@]}
-if [ -n "$with_cloud" ]; then
- echo "    -- cloud --"
- [ "$last" = "__CLOUD__" ] && mark=" ⭐" || mark=""
- printf "%2d) ☁ OpenCode cloud (its default model)%s\n" $((n+1)) "$mark"
-fi
 read -p "Choose model [1]: " c
 c=${c:-1}
 case "$c" in ''|*[!0-9]*) c=1 ;; esac
 [ "$c" -lt 1 ] && c=1
-[ "$c" -gt "$n" ] && [ -z "$with_cloud" ] && c=1
-if [ "$c" -gt "$n" ] && [ -n "$with_cloud" ]; then
- MODEL="__CLOUD__"
-else
- MODEL="${MODELS[$((c-1))]}"
-fi
-echo "$MODEL" > "$LAST_FILE"
-}
-
-select_project(){
-echo "Projects:"
-local dirs=("$TARGET_DIR"/*/)
-if [ ${#dirs[@]} -eq 0 ] || [ ! -d "${dirs[0]}" ]; then
- echo "No projects found in $TARGET_DIR"
- exit 1
-fi
-select dir in "${dirs[@]}"; do
- [ -n "$dir" ] && { PROJECT_NAME=$(basename "${dir%/}"); break; }
-done
-}
-
-launch(){
-maybe_quick_clean
-select_model
-select_project
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && aider --model ollama_chat/$MODEL"
-}
-
-chat(){
-select_model
-ollama run "$MODEL"
-}
-
-#Write ~/.config/opencode/opencode.json inside Ubuntu from the installed
-#Ollama models (OpenAI-compatible provider), so OpenCode can select them via
-#--model ollama/<name>. Always overwrites.
-#Returns 0 if the config was written, non-zero otherwise (no models / write failure).
-generate_opencode_config(){
-mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
-[ ${#MODELS[@]} -eq 0 ] && return 1
-#OpenCode's schema requires limit.output alongside limit.context. Cap output
-#at 4096 tokens (or the context window, if smaller) - a large max_output on a
-#phone-sized context risks runaway generation.
-OUTPUT_CAP=$(( OLLAMA_CONTEXT_LENGTH > 4096 ? 4096 : OLLAMA_CONTEXT_LENGTH ))
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'mkdir -p "$HOME/.config/opencode"'
-DEST="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/.config/opencode/opencode.json"
-{
-printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "http://127.0.0.1:11434/v1"\n      },\n      "models": {\n'
-for i in "${!MODELS[@]}"; do
- comma="," 
- [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
- printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$OUTPUT_CAP" "$comma"
-done
-printf '      }\n    }\n  }\n}\n'
-} > "$DEST" 2>/dev/null || return 1
-echo "Generated OpenCode Ollama provider config (.config/opencode/opencode.json in Ubuntu home)"
+[ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
+MODEL="${MODELS[$((c-1))]}"
 return 0
 }
 
-#Like generate_opencode_config, but respects an existing user config.
-#Returns 0 if a provider config is usable, non-zero otherwise.
-sync_opencode_config(){
-if proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '[ -f "$HOME/.config/opencode/opencode.json" ]' >/dev/null 2>&1; then
- return 0
-fi
-generate_opencode_config
+chat(){
+select_model_host || return 0
+ollama run "$MODEL"
 }
 
-#Menu action: discard any existing OpenCode config and regenerate it from the
-#current Ollama model list (e.g. after importing a new model).
-regen_opencode_config(){
-DEST="$PREFIX/var/lib/proot-distro/containers/$UBUNTU_DISTRO_NAME/rootfs/root/.config/opencode/opencode.json"
-if [ -f "$DEST" ]; then
- read -p "Overwrite existing .config/opencode/opencode.json in Ubuntu home? [y/N] " ans
- case "$ans" in
-  [Yy]*) ;;
-  *) echo "Aborted."; return 1 ;;
- esac
-fi
-generate_opencode_config || echo "No models to register - import one first ('code' > 2)"
-}
-
-opencode_launch(){
-maybe_quick_clean
-OC=$(ubuntu_which opencode)
-if [ -z "$OC" ]; then
- echo "OpenCode is not installed - run 'update-ai' to install it"
- exit 1
-fi
-select_model cloud
-CONFIG_OK=1
-sync_opencode_config || CONFIG_OK=0
-MODEL_ARGS=""
-if [ "$MODEL" = "__CLOUD__" ]; then
- : # bare launch - opencode uses its own default cloud model
-elif [ "$CONFIG_OK" = 1 ]; then
- MODEL_ARGS="--model ollama/$MODEL"
-else
- echo "Warning: no Ollama models found - OpenCode will use its default model"
-fi
-select_project
-# Launch by absolute path with NO PATH extension: device bisect proved that
-# exporting the nvm/.local PATH prefix wedges opencode's startup (hang), while
-# plain 'cd + absolute-path binary' renders instantly. If a runtime feature
-# ever needs node on PATH, revisit with a narrower export.
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$OC' $MODEL_ARGS"
-}
-
-freebuff_launch(){
-FB=$(ubuntu_which freebuff)
-if [ -z "$FB" ]; then
- echo "Freebuff is not installed - run 'update-ai' to install it"
- exit 1
-fi
-# The npm 'freebuff' shim starts '#!/usr/bin/env node' - and a non-interactive
-# 'bash -lc' has no nvm PATH, so env cannot find node (device-verified:
-# "env: 'node': No such file or directory"). The shim is a self-contained JS
-# entry file, so run it directly with node's absolute path - same lesson as
-# the opencode launch: never depend on PATH inside the launch shell.
-NODE_BIN=$(ubuntu_which node)
-if [ -z "$NODE_BIN" ]; then
- echo "node is not installed in Ubuntu - run 'update-ai'"
- exit 1
-fi
-select_project
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && '$NODE_BIN' '$FB'"
+#Menu action: run the Ubuntu-side dev menu (aider/opencode/freebuff/adb-ai)
+#in ONE proot session. Flat command with no PATH exports and no nested
+#quoting - the launch-string bugs of the old design can't happen here.
+ubuntu_menu(){
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '
+if command -v code-ubuntu >/dev/null 2>&1; then exec code-ubuntu; fi
+if [ -x /root/projects/*/code-ubuntu ]; then exec /root/projects/*/code-ubuntu; fi
+echo "code-ubuntu not found in Ubuntu - git pull the repo there and run update-ai"'
 }
 
 import_model(){
@@ -298,42 +171,6 @@ TMP=$(mktemp)
 echo "FROM \"$f\"" > "$TMP"
 ollama create "$N" -f "$TMP"
 rm -f "$TMP"
-}
-
-#adb-ai: wireless adb to the phone + Android memory tiers. Runs INSIDE Ubuntu
-#(it refuses to run in Termux); launch the repo copy by absolute path, no PATH
-#games (same lesson as the opencode/freebuff launches).
-adb_ai(){
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "
-if command -v adb-ai >/dev/null 2>&1; then adb-ai;
-elif [ -x '/root/projects/$PROJECT_NAME/adb-ai' ]; then '/root/projects/$PROJECT_NAME/adb-ai';
-else echo 'adb-ai not found in Ubuntu - update the repo there (git pull) first'; fi"
-}
-
-#Pre-launch Android quick clean (adb-ai tier 1, non-interactive). A local
-#model loaded into a RAM-starved phone fails to load or thrashes zram - so
-#offer the clean when free RAM is under ADB_AI_LOW_RAM_GB (default 4).
-#Config: ADB_AI_AUTO_CLEAN=ask|always|never (default ask). Cloud launches
-#(freebuff) skip this - no local model RAM to protect. Never blocks a launch:
-#any failure just continues.
-maybe_quick_clean(){
-local mode="${ADB_AI_AUTO_CLEAN:-ask}"
-[ "$mode" = "never" ] && return 0
-local before after
-before=$(free_ram_gb)
-case "${before:-}" in ''|*[!0-9.]*) return 0 ;; esac
-awk -v b="$before" -v t="${ADB_AI_LOW_RAM_GB:-4}" 'BEGIN{exit !(b+0<t+0)}' || return 0
-if [ "$mode" = "ask" ]; then
- read -p "Free RAM ${before}GB is low - quick-clean Android first? [Y/n] " a
- case "$a" in [Nn]*) return 0 ;; esac
-fi
-local bin
-bin=$(ubuntu_which adb-ai)
-[ -z "$bin" ] && bin="/root/projects/$PROJECT_NAME/adb-ai"
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "[ -x '$bin' ] && '$bin' mem --t1 --force --quiet" >/dev/null 2>&1 || return 0
-after=$(free_ram_gb)
-[ -n "$after" ] && echo "Android memory cleaned: ${before}GB -> ${after}GB free"
-return 0
 }
 
 restart_ollama(){ pkill ollama || true; nohup ollama serve >/dev/null 2>&1 & sleep 3; }
@@ -402,32 +239,24 @@ echo "Use bench.py / bench_all.py for llama.cpp-level detail."
 
 start_ollama
 status
-echo "1) Launch Aider"
+echo "1) Chat"
 echo "2) Import GGUF"
-echo "3) Chat"
-echo "4) Update AI"
-echo "5) Doctor AI"
-echo "6) Restart Ollama"
-echo "7) OpenCode"
-echo "8) Clear Cache"
-echo "9) Freebuff"
-echo "10) Regen OpenCode Config"
-echo "11) Benchmark Model"
-echo "12) Android Memory (adb-ai)"
-echo "13) Quit"
+echo "3) Update AI"
+echo "4) Doctor AI"
+echo "5) Restart Ollama"
+echo "6) Benchmark Model"
+echo "7) Clear Cache"
+echo "8) Ubuntu Dev Menu (aider / opencode / freebuff / android memory)"
+echo "9) Quit"
 read -p "Choice: " m
 case "$m" in
-1) launch;;
+1) chat;;
 2) import_model;;
-3) chat;;
-4) update-ai;;
-5) doctor-ai;;
-6) restart_ollama;;
-7) opencode_launch;;
-8) clear-ai-cache;;
-9) freebuff_launch;;
-10) regen_opencode_config;;
-11) bench_model;;
-12) adb_ai;;
+3) update-ai;;
+4) doctor-ai;;
+5) restart_ollama;;
+6) bench_model;;
+7) clear-ai-cache;;
+8) ubuntu_menu;;
 *) exit 0;;
 esac

@@ -1,0 +1,406 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# code-ubuntu — the dev-side half of the `code` launcher. Runs INSIDE proot
+# Ubuntu only (refuses to run on the Termux host), and talks to the host's
+# Ollama over loopback HTTP. `code` (Termux) owns host-only things: ollama
+# CLI chat/imports, package updates, the server itself. Everything that is
+# "inside Ubuntu" by nature lives here and works BOTH when `code` drops into
+# this menu and when you're already in an `ubuntu` shell and just type
+# `code-ubuntu`.
+#
+# Subcommands: aider | opencode | freebuff | regen-oc | mem | status
+# No args: interactive menu.
+#
+# Config: ~/.ai-env.conf is reached through the termux-home symlink created
+# by update-ai (one config file repo-wide, per AGENTS.md rule 2):
+#   OLLAMA_CONTEXT_LENGTH, ADB_AI_AUTO_CLEAN (ask|always|never),
+#   ADB_AI_LOW_RAM_GB, PROJECTS_DIR
+# State: ~/.config/code-ubuntu/last_model
+# =============================================================================
+
+if [ ! -r /etc/os-release ] || ! grep -q '^ID=ubuntu' /etc/os-release; then
+    if [ -d "/data/data/com.termux" ]; then
+        die "This runs INSIDE proot Ubuntu - it is invoked for you by 'code' (option 8), or from an 'ubuntu' shell"
+    fi
+    die "code-ubuntu must run inside a proot Ubuntu container"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="$HOME/.config/code-ubuntu"
+LAST_FILE="$STATE_DIR/last_model"
+
+# --- Config (Termux's ~/.ai-env.conf via the termux-home symlink) ---
+[ -f "$HOME/termux-home/.ai-env.conf" ] && \
+    # shellcheck disable=SC1090
+    . "$HOME/termux-home/.ai-env.conf"
+OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
+OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
+ADB_AI_AUTO_CLEAN="${ADB_AI_AUTO_CLEAN:-ask}"
+ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
+PROJECTS_DIR="${PROJECTS_DIR:-$HOME/projects}"
+
+usage() {
+    cat <<EOF
+Usage: code-ubuntu [COMMAND]
+
+The Ubuntu-side dev menu. Works standalone in an 'ubuntu' shell, or via
+'code' (Termux) option 8.
+
+Commands:
+  (none) | menu    Interactive menu (aider / opencode / freebuff / regen-oc /
+                   android memory / status)
+  aider            Model picker -> project picker -> aider
+  opencode         Model picker (incl. cloud) -> project picker -> opencode
+  freebuff         Project picker -> freebuff (cloud models)
+  regen-oc         Regenerate ~/.config/opencode/opencode.json from the
+                   current Ollama model list
+  mem              Android memory menu (delegates to adb-ai)
+  status           Ollama + memory status
+Options:
+  -f, --force      regen-oc: overwrite without asking
+  -h, --help       Show this help
+EOF
+    exit 0
+}
+
+log()  { echo "$*"; }
+err()  { echo "ERROR: $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+# Ollama API. Every call: timeout with hard kill + stdin /dev/null (device
+# lesson from adb-ai: nothing may hold the caller's pipe or block forever).
+api() { # path [post-data]
+    local path="$1" data="${2:-}"
+    if [ -n "$data" ]; then
+        timeout -k 2 10 curl -s "$OLLAMA_URL$path" -d "$data" </dev/null 2>/dev/null || true
+    else
+        timeout -k 2 10 curl -s "$OLLAMA_URL$path" </dev/null 2>/dev/null || true
+    fi
+}
+
+api_ok() { [ -n "$(api /api/version)" ]; }
+
+# Free RAM in GB from /proc/meminfo (Android kernels expose MemAvailable).
+free_ram_gb() {
+    awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
+}
+
+# One-line model descriptor from /api/show: parameter count + quantization +
+# disk size. Plain grep parsing (no jq — never installed by these scripts).
+model_meta_api() { # name sizeGB -> sets META
+    local show params quant
+    show=$(api /api/show "{\"model\":\"$1\"}")
+    params=$(printf '%s' "$show" | grep -oE '"parameter_size": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
+    quant=$(printf '%s' "$show" | grep -oE '"quantization_level": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
+    META=""
+    [ -n "$params" ] && META="$params"
+    [ -n "$quant" ] && META="$META $quant"
+    # Missing trailing return 0 cost us a set -e death when the size arg was
+    # empty (last && -chain failing fails the function).
+    if [ -n "$2" ] && [ "$2" != "0.0" ]; then META="$META - ${2}GB disk"; fi
+    return 0
+}
+
+# Model table from /api/tags: parallel-greps name+size (same order), sizes to GB.
+# Temp file, not process substitution: /dev/fd is unreliable in proot (device
+# lesson — same class as the pipe-holding bugs in adb-ai).
+load_models_api() {
+    local tags t
+    tags=$(api /api/tags)
+    if [ -z "$tags" ]; then
+        MODELS=(); DISKS=(); return 1
+    fi
+    t=$(mktemp)
+    printf '%s' "$tags" | grep -oE '"name": *"[^"]*"' | sed 's/.*"name": *"//; s/"$//' > "$t"
+    mapfile -t MODELS < "$t"
+    printf '%s' "$tags" | grep -oE '"size": *[0-9]+' | grep -oE '[0-9]+' | awk '{printf "%.1f\n", $1/1e9}' > "$t"
+    mapfile -t DISKS < "$t"
+    rm -f "$t"
+}
+
+# =============================================================================
+# Model + project pickers (moved from `code`; state now lives in Ubuntu)
+# =============================================================================
+
+select_model() {
+    # Optional "cloud" arg appends an OpenCode-cloud entry AFTER local models,
+    # so the Enter-default stays the first local model (same UX as before).
+    local with_cloud="${1:-}"
+    local last mark
+    last="$(cat "$LAST_FILE" 2>/dev/null || true)"
+    load_models_api || true
+    if [ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ]; then
+        die "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
+    fi
+    local fr
+    fr=$(free_ram_gb)
+    [ -n "$fr" ] && log "Free RAM: ${fr}GB (model + its context KV cache must fit)"
+    log "Installed models:"
+    local i
+    for i in "${!MODELS[@]}"; do
+        mark=""
+        [ "${MODELS[$i]}" = "$last" ] && mark=" ⭐"
+        model_meta_api "${MODELS[$i]}" "${DISKS[$i]:-}"
+        printf "%2d) %-38s %s%s\n" $((i+1)) "${MODELS[$i]}" "$META" "$mark"
+    done
+    local n=${#MODELS[@]}
+    if [ -n "$with_cloud" ]; then
+        log "    -- cloud --"
+        [ "$last" = "__CLOUD__" ] && mark=" ⭐" || mark=""
+        printf "%2d) ☁ OpenCode cloud (its default model)%s\n" $((n+1)) "$mark"
+    fi
+    local c
+    read -rp "Choose model [1]: " c
+    c=${c:-1}
+    case "$c" in ''|*[!0-9]*) c=1 ;; esac
+    [ "$c" -lt 1 ] && c=1
+    if [ -z "$with_cloud" ] && [ "$c" -gt "$n" ]; then c=1; fi
+    if [ -n "$with_cloud" ] && [ "$c" -gt "$n" ]; then
+        MODEL="__CLOUD__"
+    else
+        MODEL="${MODELS[$((c-1))]}"
+    fi
+    mkdir -p "$STATE_DIR"
+    echo "$MODEL" > "$LAST_FILE"
+}
+
+select_project() {
+    log "Projects:"
+    local dirs=("$PROJECTS_DIR"/*/)
+    if [ ! -d "${dirs[0]:-}" ]; then
+        die "No projects found in $PROJECTS_DIR"
+    fi
+    local dir
+    select dir in "${dirs[@]}"; do
+        [ -n "$dir" ] && { PROJECT_NAME=$(basename "${dir%/}"); break; }
+    done
+}
+
+# =============================================================================
+# Pre-launch quick clean (moved from `code`; native here — /proc and adb-ai
+# are local). Never blocks a launch: any failure just continues.
+# =============================================================================
+
+adb_ai_bin() {
+    if command -v adb-ai >/dev/null 2>&1; then
+        command -v adb-ai
+    elif [ -x "$SCRIPT_DIR/adb-ai" ]; then
+        echo "$SCRIPT_DIR/adb-ai"
+    else
+        return 1
+    fi
+}
+
+maybe_quick_clean() {
+    local mode="${ADB_AI_AUTO_CLEAN:-ask}"
+    [ "$mode" = "never" ] && return 0
+    local before after bin
+    before=$(free_ram_gb)
+    case "${before:-}" in ''|*[!0-9.]*) return 0 ;; esac
+    awk -v b="$before" -v t="$ADB_AI_LOW_RAM_GB" 'BEGIN{exit !(b+0<t+0)}' || return 0
+    if [ "$mode" = "ask" ]; then
+        local a
+        read -rp "Free RAM ${before}GB is low - quick-clean Android first? [Y/n] " a
+        case "$a" in [Nn]*) return 0 ;; esac
+    fi
+    bin=$(adb_ai_bin) || { err "RAM low but adb-ai not found - run 'update-ai'"; return 0; }
+    "$bin" mem --t1 --force --quiet >/dev/null 2>&1 || return 0
+    after=$(free_ram_gb)
+    [ -n "$after" ] && log "Android memory cleaned: ${before}GB -> ${after}GB free"
+    return 0
+}
+
+# =============================================================================
+# Launches. Plain: cd + binary. opencode gets an absolute path WITHOUT any
+# PATH export (device-bisect lesson: the export wedges its TUI). freebuff's
+# npm shim is '#!/usr/bin/env node' which cannot resolve node in a
+# non-interactive shell — run the shim via node's absolute path instead.
+# =============================================================================
+
+find_node() {
+    if command -v node >/dev/null 2>&1; then command -v node; return 0; fi
+    local n
+    n=$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | tail -1)
+    [ -n "$n" ] && { echo "$n"; return 0; }
+    return 1
+}
+
+launch_aider() {
+    maybe_quick_clean
+    select_model
+    select_project
+    cd "$PROJECTS_DIR/$PROJECT_NAME"
+    exec aider --model "ollama_chat/$MODEL"
+}
+
+launch_opencode() {
+    local oc
+    oc=$(command -v opencode || true)
+    [ -z "$oc" ] && [ -x "$HOME/.opencode/bin/opencode" ] && oc="$HOME/.opencode/bin/opencode"
+    [ -z "$oc" ] && die "OpenCode is not installed - run 'update-ai'"
+    maybe_quick_clean
+    select_model cloud
+    local model_args=""
+    if [ "$MODEL" != "__CLOUD__" ]; then
+        regen_oc_if_missing || die "No Ollama models - OpenCode will need its default (use the cloud entry)"
+        model_args="--model ollama/$MODEL"
+    fi
+    select_project
+    cd "$PROJECTS_DIR/$PROJECT_NAME"
+    exec "$oc" $model_args
+}
+
+launch_freebuff() {
+    local fb node
+    fb=$(command -v freebuff || true)
+    if [ -z "$fb" ]; then
+        # npm global bin may not be on this shell's PATH; probe the usual dir
+        fb=$(ls "$HOME"/.nvm/versions/node/*/bin/freebuff 2>/dev/null | tail -1)
+    fi
+    [ -z "$fb" ] && die "Freebuff is not installed - run 'update-ai'"
+    node=$(find_node) || die "node is not installed in Ubuntu - run 'update-ai'"
+    select_project
+    cd "$PROJECTS_DIR/$PROJECT_NAME"
+    exec "$node" "$fb"
+}
+
+# =============================================================================
+# OpenCode config (moved from `code`; writes the Ubuntu home natively — no
+# more reconstructing the rootfs path from Termux).
+# =============================================================================
+
+# Write ~/.config/opencode/opencode.json from the installed Ollama models
+# (OpenAI-compatible provider). Schema requires limit.output alongside
+# limit.context; output is capped at 4096 (or ctx, if smaller).
+generate_oc_config() {
+    load_models_api || return 1
+    [ ${#MODELS[@]} -eq 0 ] && return 1
+    local cap=$(( OLLAMA_CONTEXT_LENGTH > 4096 ? 4096 : OLLAMA_CONTEXT_LENGTH ))
+    mkdir -p "$HOME/.config/opencode"
+    local dest="$HOME/.config/opencode/opencode.json"
+    {
+        printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$OLLAMA_URL"
+        local i comma
+        for i in "${!MODELS[@]}"; do
+            comma=","
+            [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
+            printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' \
+                "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$cap" "$comma"
+        done
+        printf '      }\n    }\n  }\n}\n'
+    } > "$dest" 2>/dev/null || return 1
+    log "Generated OpenCode Ollama provider config (~/.config/opencode/opencode.json)"
+    return 0
+}
+
+regen_oc_if_missing() {
+    [ -f "$HOME/.config/opencode/opencode.json" ] && return 0
+    generate_oc_config
+}
+
+cmd_regen_oc() {
+    local dest="$HOME/.config/opencode/opencode.json"
+    if [ -f "$dest" ] && [ "$FORCE" != true ]; then
+        local a
+        read -rp "Overwrite existing ~/.config/opencode/opencode.json? [y/N] " a
+        case "$a" in [Yy]*) ;; *) log "Aborted."; return 1 ;; esac
+    fi
+    generate_oc_config || die "No models to register - import one first ('code' > Import GGUF)"
+}
+
+# =============================================================================
+# Status + mem delegation
+# =============================================================================
+
+cmd_status() {
+    # awk everywhere, never grep-pipelines: with Ollama unreachable the input
+    # is empty and a failing grep kills the whole status under set -e +
+    # pipefail (device-observed). awk exits 0 on empty input.
+    local fr models loaded
+    fr=$(free_ram_gb)
+    models=$(api /api/tags | awk 'BEGIN{n=0} /"name":/{n++} END{print n+0}')
+    loaded=$(api /api/ps | awk '/"name":/{match($0, /"name": *"[^"]*"/); print substr($0, RSTART+9, RLENGTH-10); exit}')
+    echo "====================================="
+    echo " Ubuntu Dev Environment"
+    echo "====================================="
+    if [ -n "$(api /api/version)" ]; then
+        echo "Ollama : Running"
+    else
+        echo "Ollama : Unreachable (is it running on the Termux side? try 'code' > Restart Ollama)"
+    fi
+    echo "Models : $models"
+    echo "Loaded : ${loaded:-none}"
+    echo "FreeRAM: ${fr:-?}GB"
+    echo
+    return 0
+}
+
+cmd_mem() {
+    local bin
+    bin=$(adb_ai_bin) || die "adb-ai not found - run 'update-ai' (or git pull the repo in Ubuntu)"
+    # No exec: from the menu we want to come back after adb-ai exits.
+    "$bin" "$@"
+}
+
+# =============================================================================
+# Menu + dispatch
+# =============================================================================
+
+menu() {
+    while true; do
+        cmd_status
+        echo "1) Aider"
+        echo "2) OpenCode"
+        echo "3) Freebuff"
+        echo "4) Regen OpenCode Config"
+        echo "5) Android Memory (adb-ai)"
+        echo "q) Back"
+        local c
+        read -rp "Choice: " c
+        case "$c" in
+            1) launch_aider ;;
+            2) launch_opencode ;;
+            3) launch_freebuff ;;
+            4) cmd_regen_oc ;;
+            5) cmd_mem ;;
+            q|Q|"") break ;;
+        esac
+    done
+}
+
+CMD="menu"
+FORCE=false
+REST=()
+if [ $# -gt 0 ]; then
+    case "$1" in
+        -h|--help) usage ;;
+        aider|opencode|freebuff|regen-oc|mem|status|menu) CMD="$1"; shift ;;
+        -f|--force) FORCE=true; shift ;;
+        -*) die "Unknown option: $1 (try --help)" ;;
+        *) die "Unknown command: $1 (try --help)" ;;
+    esac
+fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -f|--force) FORCE=true ;;
+        -h|--help) usage ;;
+        *) REST+=("$1") ;;
+    esac
+    shift
+done
+
+case "$CMD" in
+    menu)     menu ;;
+    aider)    launch_aider ;;
+    opencode) launch_opencode ;;
+    freebuff) launch_freebuff ;;
+    regen-oc) cmd_regen_oc ;;
+    mem)      if [ ${#REST[@]} -gt 0 ]; then cmd_mem "${REST[@]}"; else cmd_mem; fi ;;
+    status)   cmd_status ;;
+esac

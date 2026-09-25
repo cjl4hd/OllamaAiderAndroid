@@ -43,42 +43,49 @@ Android
 
 | Command | Runs | What it does |
 |---|---|---|
-| `code` | Termux | Interactive launcher — model/project picker + menu (below) |
+| `code` | Termux | Interactive host launcher: chat, GGUF import, benchmarks, server; option 8 opens the Ubuntu dev menu |
 | `update-ai` | Termux | Install/update everything; creates `~/.ai-env.conf` |
 | `doctor-ai` | Termux | Health checks: installs, server, API reachability, versions |
 | `clear-ai-cache` | Termux | Tiered cache cleanup (Tier 1 safe / Tier 2 destructive) |
 | `adb-ai` | Ubuntu (proot) | Wireless adb to the phone itself + Android memory tiers: kill hogs (Facebook/Instagram), phantom-killer off, revert; run `ubuntu` first |
 | `ubuntu` | Termux | Shell into the Ubuntu container |
+| `code-ubuntu` | Ubuntu (proot) | Dev-side launcher: aider/opencode/freebuff menus, pickers via the Ollama API, adb-ai; runs bare in an `ubuntu` shell too |
 | `aider-ubuntu` | Termux | Run aider with args, e.g. `aider-ubuntu --model qwen --chat-mode ask` |
 | `add_models.sh` | Termux | One-shot `ollama create` for the Modelfiles in this repo |
 | `uv_aider_install.sh` | Ubuntu | Manual fallback install of uv + Python 3.12 + aider-chat |
 | `bench.py` | Termux | Per-model llama.cpp benchmark → `benchmark.csv` |
 | `bench_all.py` | Termux | Benchmark every GGUF in the models dir → CSV + `leaderboard.md` |
 
-### `code` menu
+### `code` menu (Termux — host side)
 
-1. Launch Aider (model picker → project picker → aider inside Ubuntu)
+1. Chat (`ollama run` with the chosen model)
 2. Import GGUF (pick a `.gguf` from the models dir, name it, `ollama create`)
-3. Chat (`ollama run` with the chosen model)
-4. Update AI (delegates to `update-ai`)
-5. Doctor AI (delegates to `doctor-ai`)
-6. Restart Ollama
-7. OpenCode (project picker → opencode inside Ubuntu; generates an Ollama
-   provider config on first run so installed Ollama models are selectable)
-8. Clear Cache (delegates to `clear-ai-cache`)
-9. Freebuff (project picker → freebuff inside Ubuntu; cloud models, no API key)
-10. Regen OpenCode Config (overwrite the generated `opencode.json` from the
-    current `ollama list` — use after importing a new model)
-11. Benchmark Model (model picker → decode + prefill probes → tok/s at 2
-    decimals, plus the model's actual loaded RAM from Ollama's `/api/ps` —
-    weights + KV cache at the active context; bench.py / bench_all.py remain
-    the deep benchmarks)
-12. Android Memory (adb-ai) — launches `adb-ai` inside Ubuntu: wireless adb to
-    the phone, tiered Android memory reduction (Tier 0 info / 1 safe kills /
-    2 persistent tuning incl. phantom-killer off / 3 root-gated, plus revert).
-    Aider/OpenCode launches also offer an automatic quick clean when free RAM
-    is under the `ADB_AI_LOW_RAM_GB` threshold (`ADB_AI_AUTO_CLEAN=ask`)
-13. Quit
+3. Update AI (delegates to `update-ai`)
+4. Doctor AI (delegates to `doctor-ai`)
+5. Restart Ollama
+6. Benchmark Model (model picker → decode + prefill probes → tok/s at 2
+   decimals, plus the model's actual loaded RAM from Ollama's `/api/ps` —
+   weights + KV cache at the active context; bench.py / bench_all.py remain
+   the deep benchmarks)
+7. Clear Cache (delegates to `clear-ai-cache`)
+8. Ubuntu Dev Menu — one proot session running `code-ubuntu` (below)
+9. Quit
+
+### `code-ubuntu` menu (Ubuntu — dev side; also runs bare in an `ubuntu` shell)
+
+1. Aider (model picker → project picker → aider; pre-launch quick clean when
+   free RAM is under `ADB_AI_LOW_RAM_GB`, `ADB_AI_AUTO_CLEAN=ask`)
+2. OpenCode (model picker incl. cloud entry → project picker → opencode;
+   generates the Ollama provider config on first run)
+3. Freebuff (project picker → freebuff; cloud models, no API key)
+4. Regen OpenCode Config (overwrite `~/.config/opencode/opencode.json` from
+   the current Ollama model list — use after importing a new model)
+5. Android Memory (adb-ai) — wireless adb to the phone, tiered Android memory
+   reduction (0 info / 1 safe kills / 2 persistent incl. phantom-killer off /
+   3 root-gated, plus revert and tracked freezes)
+q. Back
+
+Subcommands: `code-ubuntu aider|opencode|freebuff|regen-oc|mem|status`.
 
 ## Configuration
 
@@ -126,7 +133,7 @@ Installed models:
   spoken for or you want a stronger model for a one-off task.
 - The last choice is remembered and starred next launch; cloud being last keeps
   the Enter-default on your first local model.
-- Only menu 7 (OpenCode) shows the cloud entry — Aider and chat stay local-only.
+- Only OpenCode (picker's cloud entry) shows the cloud model — Aider and chat stay local-only.
 
 ### Flags
 
@@ -246,7 +253,7 @@ Models remain in:
    shares Android's network stack. Verify with `ollama ps` in a second Termux
    session while OpenCode generates.
 3. **Gotcha:** the generated config is never auto-overwritten. After importing a
-   new model, run `code` → **10) Regen OpenCode Config** (or delete
+   new model, run **`code-ubuntu` → 4) Regen OpenCode Config** (or delete
    `~/ubuntu-home/.config/opencode/opencode.json`).
 
 In-app basics: `/init` once per project (writes `AGENTS.md`), `/models` to switch,
@@ -313,7 +320,7 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
   1. Retest after restarting Ollama with `OLLAMA_NUM_PARALLEL=1` — the first
      slow session ran under the old server (num_parallel=4 KV-cache tax, and
      possibly a partially-loaded model). This alone may close it.
-  2. Measure: menu 11 (Benchmark Model) gives whole-run tok/s per model;
+  2. Measure: `code` menu 6 (Benchmark Model) gives whole-run tok/s per model;
      `bench.py`/`bench_all.py` give the prompt-eval vs decode split. If decode
      is fine but responses stay slow, compare aider (native `/api`) vs opencode
      (`/v1`) latency to isolate endpoint overhead, and watch for thermal
