@@ -56,6 +56,9 @@ Environment (via ~/.ai-env.conf):
   OLLAMA_LOAD_TIMEOUT    Max wait for a cold model load before Ollama aborts
                         (default: 15m; Ollama's own default of 5m is tight for
                         phone flash + large GGUFs).
+  OLLAMA_MODELS       Model store directory (default: ~/.ollama/models). Pinned
+                        explicitly so an ollama package upgrade can never point
+                        the server at a fresh empty dir and hide your models.
   ADB_AI              Android memory/adb tooling: run 'adb-ai' inside Ubuntu
                         (wireless adb to the phone, kill memory hogs, phantom
                         process killer off). Config: ~/.adb-ai.conf in the
@@ -66,9 +69,6 @@ Environment (via ~/.ai-env.conf):
                         (default: 4)
   PROJECTS_DIR        Project dir INSIDE Ubuntu for code-ubuntu launchers
                         (default: ~/projects)
-  OLLAMA_KEEP_ALIVE    How long a model stays loaded after use (default: -1 =
-                        forever). Reloads cost minutes on a phone; override to
-                        e.g. 30m only if a big model squeezes RAM.
 EOF
     exit 0
 }
@@ -437,6 +437,17 @@ if ! command -v ollama >/dev/null 2>&1; then
 else
     log "Ollama found - checking for updates..."
     pkg upgrade ollama -y
+fi
+
+# A package upgrade can change the binary's default data dir, which makes
+# every model vanish from "ollama list" while ~/.ollama/models is still full
+# (device-observed). Pin the store and warn loudly if the models are unseen.
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
+if command -v ollama >/dev/null 2>&1 && [ -d "$HOME/.ollama/models/manifests" ] \
+    && [ -z "$(OLLAMA_MODELS="$OLLAMA_MODELS" ollama list 2>/dev/null | awk 'NR>1')" ]; then
+    err "$OLLAMA_MODELS has manifests but 'ollama list' is empty - the binary's"
+    err "default model dir may have changed. 'code' now pins OLLAMA_MODELS;"
+    err "restart via 'code' > 5) Restart Ollama, then re-run 'update-ai'."
 fi
 
 # =============================================================================

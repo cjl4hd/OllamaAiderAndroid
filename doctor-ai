@@ -76,8 +76,16 @@ pgrep -f "ollama serve" >/dev/null \
     && pass "Ollama server running" \
     || fail "Ollama server not running"
 
-if [ "$(ollama list 2>/dev/null | awk 'NR>1' | wc -l)" -gt 0 ]; then
-    pass "Models installed ($(ollama list 2>/dev/null | awk 'NR>1' | wc -l))"
+# Pin the store before querying: an upgraded ollama binary can silently
+# change its default data dir, which reads as "no models" (device-seen).
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
+NLIST=$(ollama list 2>/dev/null | awk 'NR>1' | wc -l)
+MANIFESTS="$HOME/.ollama/models/manifests/registry.ollama.ai/library"
+if [ "$NLIST" -gt 0 ]; then
+    pass "Models installed ($NLIST)"
+elif [ -d "$MANIFESTS" ] && [ -n "$(ls "$MANIFESTS" 2>/dev/null)" ]; then
+    fail "Models exist in ~/.ollama/models but 'ollama list' is empty -"
+    fail "  the binary's default model dir likely changed. Restart via 'code' > 5."
 else
     fail "No models installed (use 'code' > 2) Import GGUF)"
 fi

@@ -108,6 +108,7 @@ and checks it inside Ubuntu alongside the other container-side packages.
 | `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
 | `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
+| `OLLAMA_MODELS` | `~/.ollama/models` | Model store, pinned explicitly so an ollama package upgrade can't point the server at an empty dir and hide your models |
 | `ADB_AI_AUTO_CLEAN` | `ask` | Pre-launch Android quick clean from `code` when RAM is low: `ask` / `always` / `never` |
 | `ADB_AI_LOW_RAM_GB` | `4` | Free-RAM threshold (GB) that triggers the pre-launch clean |
 

@@ -32,6 +32,13 @@ ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 
 [ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
+#Pin the model store explicitly. A pkg upgrade of ollama can change the
+#binary's default data dir, which makes every existing model vanish from
+#"ollama list" while ~/.ollama/models is still full (seen on device: 7
+#manifests on disk, empty list). Pinning overrides any new default.
+#Override via OLLAMA_MODELS in ~/.ai-env.conf.
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
+
 #Parameters to optimize for S26
 #Force flahs attention, mandatory to unlock kv cache quantization
 export OLLAMA_FLASH_ATTENTION=1
