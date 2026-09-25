@@ -75,7 +75,9 @@ Android
     the deep benchmarks)
 12. Android Memory (adb-ai) — launches `adb-ai` inside Ubuntu: wireless adb to
     the phone, tiered Android memory reduction (Tier 0 info / 1 safe kills /
-    2 persistent tuning incl. phantom-killer off / 3 root-gated, plus revert)
+    2 persistent tuning incl. phantom-killer off / 3 root-gated, plus revert).
+    Aider/OpenCode launches also offer an automatic quick clean when free RAM
+    is under the `ADB_AI_LOW_RAM_GB` threshold (`ADB_AI_AUTO_CLEAN=ask`)
 13. Quit
 
 ## Configuration
@@ -96,8 +98,8 @@ Android
 | `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
 | `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
-| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
-| `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
+| `ADB_AI_AUTO_CLEAN` | `ask` | Pre-launch Android quick clean from `code` when RAM is low: `ask` / `always` / `never` |
+| `ADB_AI_LOW_RAM_GB` | `4` | Free-RAM threshold (GB) that triggers the pre-launch clean |
 
 `adb-ai` has its own config, `~/.adb-ai.conf`, inside the **Ubuntu** home
 (Termux's `~/.ai-env.conf` is not visible from the container), seeded on first

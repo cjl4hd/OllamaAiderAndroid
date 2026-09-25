@@ -174,6 +174,7 @@ done
 }
 
 launch(){
+maybe_quick_clean
 select_model
 select_project
 proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "cd projects/$PROJECT_NAME && aider --model ollama_chat/$MODEL"
@@ -234,6 +235,7 @@ generate_opencode_config || echo "No models to register - import one first ('cod
 }
 
 opencode_launch(){
+maybe_quick_clean
 OC=$(ubuntu_which opencode)
 if [ -z "$OC" ]; then
  echo "OpenCode is not installed - run 'update-ai' to install it"
@@ -306,6 +308,32 @@ proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "
 if command -v adb-ai >/dev/null 2>&1; then adb-ai;
 elif [ -x '/root/projects/$PROJECT_NAME/adb-ai' ]; then '/root/projects/$PROJECT_NAME/adb-ai';
 else echo 'adb-ai not found in Ubuntu - update the repo there (git pull) first'; fi"
+}
+
+#Pre-launch Android quick clean (adb-ai tier 1, non-interactive). A local
+#model loaded into a RAM-starved phone fails to load or thrashes zram - so
+#offer the clean when free RAM is under ADB_AI_LOW_RAM_GB (default 4).
+#Config: ADB_AI_AUTO_CLEAN=ask|always|never (default ask). Cloud launches
+#(freebuff) skip this - no local model RAM to protect. Never blocks a launch:
+#any failure just continues.
+maybe_quick_clean(){
+local mode="${ADB_AI_AUTO_CLEAN:-ask}"
+[ "$mode" = "never" ] && return 0
+local before after
+before=$(free_ram_gb)
+case "${before:-}" in ''|*[!0-9.]*) return 0 ;; esac
+awk -v b="$before" -v t="${ADB_AI_LOW_RAM_GB:-4}" 'BEGIN{exit !(b+0<t+0)}' || return 0
+if [ "$mode" = "ask" ]; then
+ read -p "Free RAM ${before}GB is low - quick-clean Android first? [Y/n] " a
+ case "$a" in [Nn]*) return 0 ;; esac
+fi
+local bin
+bin=$(ubuntu_which adb-ai)
+[ -z "$bin" ] && bin="/root/projects/$PROJECT_NAME/adb-ai"
+proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "[ -x '$bin' ] && '$bin' mem --t1 --force --quiet" >/dev/null 2>&1 || return 0
+after=$(free_ram_gb)
+[ -n "$after" ] && echo "Android memory cleaned: ${before}GB -> ${after}GB free"
+return 0
 }
 
 restart_ollama(){ pkill ollama || true; nohup ollama serve >/dev/null 2>&1 & sleep 3; }
