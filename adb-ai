@@ -92,11 +92,15 @@ Options:
   --pair-code XXXXXX   connect: pairing code (with --pair-port)
   -h, --help           Show this help
 
-First run (Android 11+): enable Developer options > Wireless debugging,
-choose "Pair with pairing code", run `adb-ai`, enter the port + code shown.
-Split the screen so the dialog stays up — the pairing port closes the
-instant the dialog is dismissed. Pairing persists; later runs re-discover
-the (rotating) connect port automatically. Config: ~/.adb-ai.conf
+First run (Android 11+): enable Developer options > Wireless debugging (keep
+the screen on / phone charging - Samsung drops the listener when the screen
+sleeps), open "Pair device with pairing code", and split the screen so the
+dialog stays up. Run `adb-ai` and enter that dialog's port + 6-digit code.
+Two different ports exist: the pairing dialog's (one-time, dies when the
+dialog closes) and the main Wireless debugging screen's (rotates on every
+toggle). You only ever need the pairing one - after pairing, adb-ai
+reconnects on its own: saved port > mdns > ~30s loopback scan. If it fails,
+toggle Wireless debugging OFF/ON and rerun. Config: ~/.adb-ai.conf
 (kill list, tier-2 values).
 EOF
     exit 0
@@ -300,14 +304,51 @@ mdns_ports() {
 # Wireless debugging connect ports rotate on every toggle/reboot; pairing
 # persists, so discovery via mdns usually works after the first run.
 discover_connect_port() {
-    local p
-    for _ in 1 2; do
-        p=$(mdns_ports connect)
-        [ -n "$p" ] && { echo "$p"; return 0; }
-        sleep 1
-        adb_server
+    # Single attempt: mdns is a cheap opportunistic path (dead inside this
+    # proot); the loopback scan is the real fallback now.
+    mdns_ports connect
+}
+
+# Pure-bash loopback probe: open TCP to 127.0.0.1:$1. No external process —
+# ~3ms for a closed port on this phone (device-verified); this is what makes
+# the scan viable.
+port_open() { # port
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# Scan the phone's ephemeral port range for listeners (mdns is dead from proot,
+# device-verified; but proot shares the network namespace, so the adbd listener
+# IS reachable on loopback). 28k ports in ~30s with 48-way concurrency and a
+# fork-free inflight counter — a jobs|wc check per probe forked 2 processes per
+# probe and tripled the runtime (device-measured).
+scan_candidates() {
+    local tmp inflight=0 p
+    tmp=$(mktemp)
+    for p in $(seq 32768 60999); do
+        (
+            port_open "$p" && echo "$p" >> "$tmp"
+        ) &
+        inflight=$((inflight+1))
+        if [ "$inflight" -ge 48 ]; then
+            wait -n || true
+            inflight=$((inflight-1))
+        fi
     done
-    return 1
+    wait
+    sort -n "$tmp" 2>/dev/null
+    rm -f "$tmp"
+}
+
+# One connect attempt: adb connect + verify the serial actually lists as
+# "device" (open port != adbd; random local services must not match).
+try_connect() { # port -> 0 on verified connection, sets ADB_SERIAL
+    local port="$1" serial
+    timeout -k 2 8 adb connect "127.0.0.1:$port" </dev/null >/dev/null 2>&1 || true
+    serial="127.0.0.1:$port"
+    device_listed "$serial" || return 1
+    ADB_SERIAL="$serial"
+    state_set ADB_SERIAL "$serial"
+    return 0
 }
 
 pair_flow() {
@@ -347,50 +388,54 @@ connect_flow() {
         return 0
     fi
 
+    # 1. Explicit flag wins.
     if [ -n "$CONNECT_PORT" ]; then
-        port="$CONNECT_PORT"
-    else
-        port=$(discover_connect_port) || {
-            log "mdns discovery found no connect port (phone's wireless debugging may be off)"
-            if [ "$QUIET" = true ]; then
-                err "Re-run with --connect-port N (shown in Developer options > Wireless debugging)"
-                return 1
-            fi
-            echo "Keep the Wireless debugging screen open - the port rotates when it's toggled."
-            read -rp "Connect port (from Wireless debugging screen): " port
-            [ -n "$port" ] || { err "No port given"; return 1; }
-        }
-    fi
-
-    log "Connecting to 127.0.0.1:$port ..."
-    local conn_out
-    conn_out=$(timeout -k 2 10 adb connect "127.0.0.1:$port" </dev/null 2>&1 || true)
-    if ! printf '%s' "$conn_out" | grep -qi "connected"; then
-        log "Connect refused — pairing may be needed first"
-        if [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
-            err "Run 'adb-ai' interactively to pair (or use --pair-port/--pair-code)"
-            return 1
+        if try_connect "$CONNECT_PORT"; then
+            log "Connected: $ADB_SERIAL"
+            return 0
         fi
-        pair_flow || return 1
-        timeout -k 2 10 adb connect "127.0.0.1:$port" </dev/null >/dev/null 2>&1 || true
+        err "--connect-port $CONNECT_PORT did not verify"
     fi
 
-    serial="127.0.0.1:$port"
-    if device_listed "$serial"; then
-        ADB_SERIAL="$serial"
-        state_set ADB_SERIAL "$serial"
-        log "Connected: $ADB_SERIAL"
+    # 2. Saved serial's port, if it re-opens (survives adbd restarts when the
+    #    port happens to be reused).
+    if [ -n "$saved" ]; then
+        port="${saved##*:}"
+        if [ -n "$port" ] && try_connect "$port"; then
+            log "Reconnected via saved port: $ADB_SERIAL"
+            return 0
+        fi
+    fi
+
+    # 3. mdns (works on some setups; dead inside this proot, kept as a cheap
+    #    opportunistic path).
+    port=$(discover_connect_port) || true
+    if [ -n "$port" ] && try_connect "$port"; then
+        log "Reconnected via mdns: $ADB_SERIAL"
         return 0
     fi
 
-    # Port may already have rotated again; accept any single device adb sees.
-    serial=$(adb devices 2>/dev/null | awk '$2=="device"{print $1; exit}')
-    if [ -n "$serial" ]; then
-        ADB_SERIAL="$serial"
-        state_set ADB_SERIAL "$serial"
-        log "Connected: $ADB_SERIAL"
-        return 0
+    # 4. Loopback scan of the ephemeral range (device-verified: 28k ports in
+    #    ~30s, finds adbd because proot shares the phone's network namespace).
+    if [ "$QUIET" != true ] || [ "$FORCE" = true ]; then
+        log "Scanning loopback for the adbd listener (~30s)..."
+        for port in $(scan_candidates); do
+            if try_connect "$port"; then
+                log "Reconnected via scan: $ADB_SERIAL"
+                return 0
+            fi
+        done
     fi
+
+    # 5. Ask.
+    if [ "$QUIET" = true ]; then
+        err "Auto-connect failed - re-run with --connect-port N (Wireless debugging screen), or toggle Wireless debugging and retry"
+        return 1
+    fi
+    echo "Auto-connect failed. Toggle Wireless debugging OFF/ON (port rotates), or read the"
+    echo "current port from Settings > Developer options > Wireless debugging."
+    read -rp "Connect port (blank = give up): " port
+    [ -n "$port" ] && try_connect "$port" && { log "Connected: $ADB_SERIAL"; return 0; }
     err "Could not connect (is Wireless debugging still on?)"
     return 1
 }

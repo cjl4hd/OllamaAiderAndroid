@@ -132,4 +132,10 @@ mdns wedge the shell indefinitely; redirect to files, use `timeout -k`, and
 `</dev/null` (see `adbx`/`mdns_ports`/`device_listed` in adb-ai). Samsung's
 `dumpsys meminfo` section is `380,893K: pkg` (uppercase K, no space) vs AOSP's
 `380,893 kB: pkg` — parse both. `/proc/swaps` is SELinux-blocked from adb shell;
-use meminfo's SwapTotal/SwapFree.
+use meminfo's SwapTotal/SwapFree. mdns discovery is dead from inside proot, but
+proot shares the phone's network namespace — auto-reconnect scans loopback with
+pure-bash `/dev/tcp` probes (fork-free concurrency counter; a `jobs|wc` throttle
+forks 2 processes per probe and triples the runtime) and verifies each open port
+with a real `adb connect`. Variadic flag parsing: collect package args only up
+to the next `--flag`, then reprocess that flag — the outer shift discards it
+otherwise.

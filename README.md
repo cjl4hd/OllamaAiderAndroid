@@ -151,6 +151,15 @@ adb-ai revert           # restore every Tier-2 original
 - First pairing: on the phone open *Developer options → Wireless debugging →
   Pair device with pairing code* and **split the screen** (or float the app over
   Settings) — the pairing port closes the instant the dialog is dismissed.
+- The **two ports**: the pairing *dialog* shows a one-time port + 6-digit code;
+  the *main Wireless debugging screen* shows a separate port that rotates on
+  every toggle. You only ever need the pairing one — after that, `adb-ai`
+  reconnects automatically: saved port → mdns → ~30s parallel loopback scan
+  (proot shares the phone's network namespace, so the adbd listener is
+  reachable on 127.0.0.1 even though mdns is not visible from the container).
+- Samsung drops the wireless-debugging listener when the screen sleeps. Keep
+  the screen on / phone charging during setup; afterwards, toggle Wireless
+  debugging back on and rerun `adb-ai` — no port reading needed.
 - Tier 2 disables Android 12+'s **phantom process killer** (the thing that
   reaps Termux/proot children mid-run) and saves every original; `adb-ai
   revert` restores them.
