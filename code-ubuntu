@@ -332,7 +332,8 @@ cmd_status() {
     # awk everywhere, never grep-pipelines: with Ollama unreachable the input
     # is empty and a failing grep kills the whole status under set -e +
     # pipefail (device-observed). awk exits 0 on empty input.
-    local fr models loaded
+    # Mirrors code's status_banner (kept in sync): same layout, same parsing.
+    local fr models loaded low
     fr=$(free_ram_gb)
     # gsub returns the replacement count: counts every "name": occurrence,
     # not just matching lines (Ollama's /api/tags is ONE compact line, so a
@@ -341,7 +342,7 @@ cmd_status() {
     # Strip the "name":*" prefix by substitution, not fixed substr offsets:
     # compact JSON ("name":"x") vs spaced ("name": "x") differ by one char,
     # and the old substr(+9) chopped the first letter of the model name.
-    loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v); print v; exit}}')
+    loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v)} if (match($0, /"size": *[0-9]+/)) {s=substr($0, RSTART, RLENGTH); sub(/^"size": */, "", s)}} END{if (v != "") {if (s+0 > 0) printf "%s (%.1fGB)", v, s/1e9; else print v}}')
     echo "====================================="
     echo " Ubuntu Dev Environment"
     echo "====================================="
@@ -350,9 +351,16 @@ cmd_status() {
     else
         echo "Ollama : Unreachable (is it running on the Termux side? try 'code' > Restart Ollama)"
     fi
-    echo "Models : $models"
-    echo "Loaded : ${loaded:-none}"
-    echo "FreeRAM: ${fr:-?}GB"
+    echo "Models  : $models"
+    echo "Loaded  : ${loaded:-none}"
+    echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
+    if [ -n "$fr" ]; then
+        low=""
+        if awk -v f="$fr" -v t="$ADB_AI_LOW_RAM_GB" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 5)"; fi
+        echo "FreeRAM : ${fr}GB${low}"
+    else
+        echo "FreeRAM : ?GB"
+    fi
     echo
     return 0
 }

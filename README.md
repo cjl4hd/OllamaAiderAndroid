@@ -310,7 +310,9 @@ JSON-validated) but **not yet run on device**:
   with `OLLAMA_NUM_PARALLEL=1`, so the 4-slot KV-cache tax was still active.
 - `add_models.sh` (filenames confirmed against `/storage/emulated/0/Models/`;
   script itself unrun)
-- Status banner `Loaded`/`Ctx` lines and menu options 9–10
+- Status banner `Loaded`/`Ctx` lines — rewritten API-based and mirrored across
+  both launchers (correct model count/name on compact JSON, KV-cache GB from
+  `/api/ps`, LOW-RAM marker); harness-verified, on-device recheck pending
 
 If a fresh `update-ai` run on another phone stalls at the OpenCode/Freebuff
 prompts, that's the new ask-based install flow — `-f` skips prompts.

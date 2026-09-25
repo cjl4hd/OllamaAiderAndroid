@@ -26,6 +26,9 @@ source "$CONFIG_FILE"
 
 UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
 GGUF_DIR="${GGUF_DIR:-$HOME/storage/shared/Models}"
+#Low-RAM threshold for the banner's ** LOW marker (same key adb-ai's
+#auto-clean and code-ubuntu use - one config file repo-wide).
+ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 
 [ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
@@ -114,24 +117,35 @@ if [ -n "$2" ] && [ "$2" != "0.0" ]; then META="$META - ${2}GB disk"; fi
 return 0
 }
 
-status() {
-COUNT=$(ollama list | awk 'NR>1'|wc -l)
-LOADED=$(ollama ps 2>/dev/null | awk 'NR>1{print $1; exit}')
-[ -z "$LOADED" ] && LOADED="none"
+#Status banner. Mirrored in code-ubuntu's cmd_status (kept in sync): same
+#layout, same awk parsing. API-based (not pgrep / ollama CLI) so it reports
+#the truth even when the server is hung, and the parsing survives compact
+#JSON (one line, no spaces) on every Ollama build.
+status_banner(){
+local models loaded fr low
+models=$(api /api/tags | awk '{n+=gsub(/"name":/, "&")} END{print n+0}')
+loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v)} if (match($0, /"size": *[0-9]+/)) {s=substr($0, RSTART, RLENGTH); sub(/^"size": */, "", s)}} END{if (v != "") {if (s+0 > 0) printf "%s (%.1fGB)", v, s/1e9; else print v}}')
+fr=$(free_ram_gb)
 echo "====================================="
 echo " AI Development Environment"
 echo "====================================="
-if pgrep -f "ollama serve" >/dev/null; then
+if [ -n "$(api /api/version)" ]; then
  echo "Ollama : Running"
 else
- echo "Ollama : Stopped"
+ echo "Ollama : Unreachable (menu 5 restarts it)"
 fi
-echo "Models  : $COUNT"
-echo "Loaded  : $LOADED"
+echo "Models  : $models"
+echo "Loaded  : ${loaded:-none}"
 echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
-FREE=$(free_ram_gb)
-echo "FreeRAM : ${FREE:-?}GB"
+if [ -n "$fr" ]; then
+ low=""
+ if awk -v f="$fr" -v t="${ADB_AI_LOW_RAM_GB:-4}" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 7)"; fi
+ echo "FreeRAM : ${fr}GB${low}"
+else
+ echo "FreeRAM : ?GB"
+fi
 echo
+return 0
 }
 
 #Host-side model picker for chat (ollama CLI - no container involvement).
@@ -265,7 +279,7 @@ echo "Use bench.py / bench_all.py for llama.cpp-level detail."
 }
 
 start_ollama
-status
+status_banner
 echo "1) Chat"
 echo "2) Import GGUF"
 echo "3) Update AI"
@@ -275,7 +289,7 @@ echo "6) Benchmark Model"
 echo "7) Clear Cache"
 echo "8) Ubuntu Dev Menu (aider / opencode / freebuff / android memory)"
 echo "9) Quit"
-read -p "Choice: " m
+read -p "Choice: " m || exit 0
 case "$m" in
 1) chat;;
 2) import_model;;
