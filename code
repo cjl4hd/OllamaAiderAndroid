@@ -73,22 +73,40 @@ free_ram_gb(){
 awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
 }
 
-#Load installed model names (MODELS) and on-disk sizes in GB (DISKS) via the
-#host ollama CLI. Sizes get one decimal each - a missing newline here once
-#merged two models' sizes into one bogus value.
-load_models(){
-mapfile -t MODELS < <(ollama list|awk 'NR>1{print $1}')
-mapfile -t DISKS < <(ollama list|awk 'NR>1{printf "%.1f\n", $3/1e9}')
+#Model metadata via the Ollama HTTP API - the SAME parsing as code-ubuntu's
+#picker (kept in sync), so every menu shows identical info. The old ollama-CLI
+#header parsing came back empty on some builds; the API JSON does not.
+api(){ # path [post-data]
+local path="$1" data="${2:-}"
+if [ -n "$data" ]; then
+ timeout -k 2 10 curl -s "http://127.0.0.1:11434$path" -d "$data" </dev/null 2>/dev/null || true
+else
+ timeout -k 2 10 curl -s "http://127.0.0.1:11434$path" </dev/null 2>/dev/null || true
+fi
 }
 
-#One-line descriptor for a model: parameter count, quantization, disk size.
-#ollama show header lines look like "  Parameters    : 4.2B"; older ollama
-#versions may omit fields - whatever is missing is left out of META.
+#Installed model names (MODELS) + on-disk sizes in GB (DISKS) from /api/tags.
+#Temp file, not process substitution (/dev/fd is unreliable in proot); sizes
+#get one decimal each - a missing newline here once merged two models' sizes
+#into one bogus value.
+load_models(){
+local tags t
+tags=$(api /api/tags)
+if [ -z "$tags" ]; then MODELS=(); DISKS=(); return 1; fi
+t=$(mktemp)
+printf '%s' "$tags" | grep -oE '"name": *"[^"]*"' | sed 's/.*"name": *"//; s/"$//' > "$t"
+mapfile -t MODELS < "$t"
+printf '%s' "$tags" | grep -oE '"size": *[0-9]+' | grep -oE '[0-9]+' | awk '{printf "%.1f\n", $1/1e9}' > "$t"
+mapfile -t DISKS < "$t"
+rm -f "$t"
+}
+
+#One-line descriptor: parameter count, quantization, disk size (from /api/show).
 model_meta(){ # $1=model, $2=diskGB (may be empty) -> sets META
-local out params quant
-out=$(ollama show "$1" 2>/dev/null)
-params=$(printf '%s\n' "$out" | awk -F': *' '/^  Parameters/{print $2; exit}')
-quant=$(printf '%s\n' "$out" | awk -F': *' '/^  Quantization/{print $2; exit}')
+local show params quant
+show=$(api /api/show "{\"model\":\"$1\"}")
+params=$(printf '%s' "$show" | grep -oE '"parameter_size": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
+quant=$(printf '%s' "$show" | grep -oE '"quantization_level": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
 META=""
 [ -n "$params" ] && META="$params"
 [ -n "$quant" ] && META="$META $quant"
