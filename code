@@ -129,13 +129,27 @@ fr=$(free_ram_gb)
 echo "====================================="
 echo " AI Development Environment"
 echo "====================================="
+local up=""
 if [ -n "$(api /api/version)" ]; then
+ up=1
  echo "Ollama : Running"
 else
  echo "Ollama : Unreachable (menu 5 restarts it)"
 fi
-echo "Models  : $models"
-echo "Loaded  : ${loaded:-none}"
+#Down -> "?": an empty /api/tags means unknown, not zero - don't claim the
+#models vanished just because the API is unreachable.
+if [ -z "$up" ]; then
+ echo "Models  : ?"
+ echo "Loaded  : ?"
+elif [ "$models" = "0" ]; then
+ echo "Models  : 0  (add one: menu 2 imports a GGUF)"
+ #"Loaded" = resident in RAM, not installed - after a restart it is none
+ #until the first request; say so, or it reads like the models vanished.
+ echo "Loaded  : ${loaded:-none (loads on first request)}"
+else
+ echo "Models  : $models"
+ echo "Loaded  : ${loaded:-none (loads on first request)}"
+fi
 echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
 if [ -n "$fr" ]; then
  low=""
