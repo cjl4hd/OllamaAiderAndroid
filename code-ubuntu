@@ -21,10 +21,14 @@ set -euo pipefail
 # =============================================================================
 
 if [ ! -r /etc/os-release ] || ! grep -q '^ID=ubuntu' /etc/os-release; then
+    # die()/log()/err() are defined further down; the guard runs first, so
+    # inline the error (device lesson: the old call silently no-op'd).
     if [ -d "/data/data/com.termux" ]; then
-        die "This runs INSIDE proot Ubuntu - it is invoked for you by 'code' (option 8), or from an 'ubuntu' shell"
+        echo "ERROR: This runs INSIDE proot Ubuntu - it is invoked for you by 'code' (option 8), or from an 'ubuntu' shell" >&2
+        exit 1
     fi
-    die "code-ubuntu must run inside a proot Ubuntu container"
+    echo "ERROR: code-ubuntu must run inside a proot Ubuntu container" >&2
+    exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,13 +69,12 @@ EOF
     exit 0
 }
 
-log()  { echo "$*"; }
-err()  { echo "ERROR: $*" >&2; }
-die()  { err "$*"; exit 1; }
-
 # =============================================================================
 # Helpers
 # =============================================================================
+log()  { echo "$*"; }
+err()  { echo "ERROR: $*" >&2; }
+die()  { err "$*"; exit 1; }
 
 # Ollama API. Every call: timeout with hard kill + stdin /dev/null (device
 # lesson from adb-ai: nothing may hold the caller's pipe or block forever).
@@ -135,8 +138,10 @@ select_model() {
     local last mark
     last="$(cat "$LAST_FILE" 2>/dev/null || true)"
     load_models_api || true
+    # rc 0 = MODEL set, rc 1 = no models, rc 130 = cancelled via the 0 entry.
     if [ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ]; then
-        die "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
+        err "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
+        return 1
     fi
     local fr
     fr=$(free_ram_gb)
@@ -155,10 +160,12 @@ select_model() {
         [ "$last" = "__CLOUD__" ] && mark=" ⭐" || mark=""
         printf "%2d) ☁ OpenCode cloud (its default model)%s\n" $((n+1)) "$mark"
     fi
+    echo " 0) Cancel"
     local c
     read -rp "Choose model [1]: " c
     c=${c:-1}
     case "$c" in ''|*[!0-9]*) c=1 ;; esac
+    [ "$c" -eq 0 ] && return 130
     [ "$c" -lt 1 ] && c=1
     if [ -z "$with_cloud" ] && [ "$c" -gt "$n" ]; then c=1; fi
     if [ -n "$with_cloud" ] && [ "$c" -gt "$n" ]; then
@@ -176,10 +183,13 @@ select_project() {
     if [ ! -d "${dirs[0]:-}" ]; then
         die "No projects found in $PROJECTS_DIR"
     fi
+    echo " 0) Cancel"
     local dir
     select dir in "${dirs[@]}"; do
+        case "$REPLY" in 0) return 130 ;; esac
         [ -n "$dir" ] && { PROJECT_NAME=$(basename "${dir%/}"); break; }
     done
+    return 0
 }
 
 # =============================================================================
@@ -233,8 +243,8 @@ find_node() {
 
 launch_aider() {
     maybe_quick_clean
-    select_model
-    select_project
+    select_model || return 0
+    select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
     exec aider --model "ollama_chat/$MODEL"
 }
@@ -245,13 +255,13 @@ launch_opencode() {
     [ -z "$oc" ] && [ -x "$HOME/.opencode/bin/opencode" ] && oc="$HOME/.opencode/bin/opencode"
     [ -z "$oc" ] && die "OpenCode is not installed - run 'update-ai'"
     maybe_quick_clean
-    select_model cloud
+    select_model cloud || return 0
     local model_args=""
     if [ "$MODEL" != "__CLOUD__" ]; then
         regen_oc_if_missing || die "No Ollama models - OpenCode will need its default (use the cloud entry)"
         model_args="--model ollama/$MODEL"
     fi
-    select_project
+    select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
     exec "$oc" $model_args
 }
@@ -265,7 +275,7 @@ launch_freebuff() {
     fi
     [ -z "$fb" ] && die "Freebuff is not installed - run 'update-ai'"
     node=$(find_node) || die "node is not installed in Ubuntu - run 'update-ai'"
-    select_project
+    select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
     exec "$node" "$fb"
 }
@@ -324,8 +334,14 @@ cmd_status() {
     # pipefail (device-observed). awk exits 0 on empty input.
     local fr models loaded
     fr=$(free_ram_gb)
-    models=$(api /api/tags | awk 'BEGIN{n=0} /"name":/{n++} END{print n+0}')
-    loaded=$(api /api/ps | awk '/"name":/{match($0, /"name": *"[^"]*"/); print substr($0, RSTART+9, RLENGTH-10); exit}')
+    # gsub returns the replacement count: counts every "name": occurrence,
+    # not just matching lines (Ollama's /api/tags is ONE compact line, so a
+    # line-count showed "Models : 1" with any number of models).
+    models=$(api /api/tags | awk '{n+=gsub(/"name":/, "&")} END{print n+0}')
+    # Strip the "name":*" prefix by substitution, not fixed substr offsets:
+    # compact JSON ("name":"x") vs spaced ("name": "x") differ by one char,
+    # and the old substr(+9) chopped the first letter of the model name.
+    loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v); print v; exit}}')
     echo "====================================="
     echo " Ubuntu Dev Environment"
     echo "====================================="
@@ -362,13 +378,17 @@ menu() {
         echo "5) Android Memory (adb-ai)"
         echo "q) Back"
         local c
-        read -rp "Choice: " c
+        # read || break: EOF (Ctrl-D) must quit cleanly, not die rc=1 via set -e.
+        read -rp "Choice: " c || break
         case "$c" in
-            1) launch_aider ;;
-            2) launch_opencode ;;
-            3) launch_freebuff ;;
-            4) cmd_regen_oc ;;
-            5) cmd_mem ;;
+            # Guarded calls: launches can legitimately return non-zero
+            # (picker cancelled = 130) and that must land back on the menu,
+            # not kill the script under set -e.
+            1) launch_aider || true ;;
+            2) launch_opencode || true ;;
+            3) launch_freebuff || true ;;
+            4) cmd_regen_oc || true ;;
+            5) cmd_mem || true ;;
             q|Q|"") break ;;
         esac
     done

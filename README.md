@@ -116,8 +116,10 @@ trio + Instagram), `MAX_CACHED_PROCESSES` (default 16),
 
 ### Choosing a model
 
-The model picker serves both Aider and OpenCode. For OpenCode launches it gains
-a **cloud** entry **after** the local models:
+Every picker (host chat, benchmark, Aider/OpenCode, and the project picker) has a
+**`0) Cancel`** entry — cancelling returns to the previous menu instead of
+launching anything. The model picker serves both Aider and OpenCode. For
+OpenCode launches it gains a **cloud** entry **after** the local models:
 
 ```
 Installed models:

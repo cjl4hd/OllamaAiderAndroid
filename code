@@ -135,9 +135,12 @@ echo
 }
 
 #Host-side model picker for chat (ollama CLI - no container involvement).
+#rc 0 = MODEL set, rc 1 = nothing to pick, rc 130 = user cancelled (0).
 select_model_host(){
 local last="" mark
-load_models
+#|| true: an unreachable Ollama makes load_models fail, and set -e would kill
+#us here instead of reaching the friendly "No models" message below.
+load_models || true
 [ ${#MODELS[@]} -eq 0 ] && { echo "No models. Import one first (menu 2)."; return 1; }
 FREE=$(free_ram_gb)
 [ -n "$FREE" ] && echo "Free RAM: ${FREE}GB (model + its context KV cache must fit)"
@@ -147,9 +150,11 @@ for i in "${!MODELS[@]}"; do
  model_meta "${MODELS[$i]}" "${DISKS[$i]:-}"
  printf "%2d) %-38s %s\n" $((i+1)) "${MODELS[$i]}" "$META"
 done
+echo " 0) Cancel"
 read -p "Choose model [1]: " c
 c=${c:-1}
 case "$c" in ''|*[!0-9]*) c=1 ;; esac
+[ "$c" -eq 0 ] && return 130
 [ "$c" -lt 1 ] && c=1
 [ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
 MODEL="${MODELS[$((c-1))]}"
@@ -157,6 +162,7 @@ return 0
 }
 
 chat(){
+#rc 130 = user cancelled -> back to the caller quietly (no stray ollama run).
 select_model_host || return 0
 ollama run "$MODEL"
 }
@@ -194,7 +200,8 @@ rm -f "$TMP"
 restart_ollama(){ pkill ollama || true; nohup ollama serve >/dev/null 2>&1 & sleep 3; }
 
 bench_model(){
-load_models
+#|| true: see select_model_host - the count check handles the empty case.
+load_models || true
 [ ${#MODELS[@]} -eq 0 ] && { echo "No models to benchmark."; return 1; }
 FREE=$(free_ram_gb)
 [ -n "$FREE" ] && echo "Free RAM: ${FREE}GB"
@@ -203,9 +210,11 @@ for i in "${!MODELS[@]}"; do
  model_meta "${MODELS[$i]}" "${DISKS[$i]:-}"
  printf "%2d) %-38s %s\n" $((i+1)) "${MODELS[$i]}" "$META"
 done
+echo " 0) Cancel"
 read -p "Model to benchmark [1]: " c
 c=${c:-1}
 case "$c" in ''|*[!0-9]*) c=1 ;; esac
+[ "$c" -eq 0 ] && return 0
 [ "$c" -lt 1 ] && c=1
 [ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
 MODEL="${MODELS[$((c-1))]}"
