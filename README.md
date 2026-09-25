@@ -326,6 +326,21 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
 - Verify Freebuff on-device install/update path in `update-ai` (launch now
   works via node absolute path; the update-ai install steps have not been
   re-exercised since)
+- adb-ai follow-ups (all device-verified so far — listed by value):
+  1. Cold/daily-driver test: let the phone doze overnight, then run `adb-ai`
+     with no flags — confirms auto-reconnect handles the real scenario
+     (screen-sleep listener drop + rotated port) end to end.
+  2. Exercise the pre-launch quick-clean prompt in a real `code` launch with
+     free RAM under the `ADB_AI_LOW_RAM_GB` threshold (the one path not yet
+     run live end-to-end).
+  3. `adb-ai status` in the `code` status banner — surface MemAvailable and
+     phantom-killer state next to Ollama's state (needs a cheap adb call with
+     a timeout so the banner never hangs when the phone is unreachable).
+  4. `adb-ai` opt-in on boot: a small Termux:Boot / `code` hook that runs the
+     tier-1 clean + reconnect when the phone restarts (must stay silent and
+     fail-soft — never block boot or `code` startup).
+  5. Reconnect-notification idea: when the scan path succeeds after a
+     rotation, log the new serial to the status banner to make drift visible.
 - Add support for optional plugins/tools:
   - whisper
   - kiwix
