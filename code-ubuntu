@@ -45,6 +45,11 @@ ADB_AI_AUTO_CLEAN="${ADB_AI_AUTO_CLEAN:-ask}"
 ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/projects}"
 
+# Every Ollama call from this side goes through curl; a proot rootfs without
+# it looks exactly like "Ollama unreachable". Say so once, up front.
+command -v curl >/dev/null 2>&1 || \
+    err "curl is not installed in Ubuntu - Ollama calls will fail. Run 'update-ai' (Termux side) to install it."
+
 usage() {
     cat <<EOF
 Usage: code-ubuntu [COMMAND]
@@ -140,7 +145,16 @@ select_model() {
     load_models_api || true
     # rc 0 = MODEL set, rc 1 = no models, rc 130 = cancelled via the 0 entry.
     if [ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ]; then
-        err "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
+        # Distinguish the two ways this list comes back empty: genuinely no
+        # models vs Ollama unreachable (or curl missing in Ubuntu - same
+        # symptom). Sending the user to the GGUF import for a network fault
+        # sends them in circles.
+        if [ -n "$(api /api/version)" ]; then
+            err "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
+        else
+            err "Ollama unreachable at $OLLAMA_URL - is it running on the Termux side? ('code' > 5) Restart Ollama."
+            err "If it IS running, curl may be missing in Ubuntu: run 'update-ai' to install it."
+        fi
         return 1
     fi
     local fr

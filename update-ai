@@ -310,6 +310,16 @@ else
     " "Ubuntu package update"
 fi
 
+# curl is the API client for everything container-side (code-ubuntu pickers,
+# status banner, OpenCode config). The proot rootfs may ship without it, and
+# without it every Ollama call from Ubuntu fails as "no models".
+if ! run_in_ubuntu "command -v curl" >/dev/null 2>&1; then
+    log "curl not found in Ubuntu - installing..."
+    run_in_ubuntu_safe \
+        "DEBIAN_FRONTEND=noninteractive apt install -y curl" \
+        "curl install in Ubuntu"
+fi
+
 # =============================================================================
 # 4. Python / UV / Aider (inside Ubuntu)
 # =============================================================================

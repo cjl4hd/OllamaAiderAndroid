@@ -87,6 +87,9 @@ q. Back
 
 Subcommands: `code-ubuntu aider|opencode|freebuff|regen-oc|mem|status`.
 
+Note: `code-ubuntu` talks to Ollama over HTTP via `curl` — `update-ai` installs
+and checks it inside Ubuntu alongside the other container-side packages.
+
 ## Configuration
 
 `~/.ai-env.conf` is created by `update-ai` and sourced by `code`, `update-ai`,
