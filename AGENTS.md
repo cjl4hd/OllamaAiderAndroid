@@ -37,8 +37,10 @@ nothing about the host beyond Termux + Android storage access.
   phone itself over loopback, then reduces **Android** memory in tiers (0 info,
   1 kill list incl. Facebook/Instagram + cached-process kills, 2 persistent
   device_config/settings with saved originals + `revert` — phantom process
-  killer off lives here, 3 root-gated). Config `~/.adb-ai.conf` in the Ubuntu
-  home; state/backups in `~/.config/adb-ai/`.
+  killer off lives here, 3 root-gated). Freezes are tracked in
+  `~/.config/adb-ai/frozen.txt` (only packages we disabled) so
+  `apps --unfreeze-all` inverts exactly our actions. Config
+  `~/.adb-ai.conf` in the Ubuntu home; state/backups in `~/.config/adb-ai/`.
 - `ubuntu` — plain shell into the Ubuntu container (`proot-distro login`).
 - `aider-ubuntu` — runs aider inside Ubuntu with argument passthrough via the
   `bash -lc 'aider "$@"' bash "$@"` trick. `aider-ubuntu.txt` is a tutorial

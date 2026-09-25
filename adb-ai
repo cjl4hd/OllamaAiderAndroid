@@ -24,12 +24,16 @@ set -euo pipefail
 #   ~/.config/adb-ai/state.conf  last working serial/port, sync-disable marker
 #   ~/.config/adb-ai/backups.txt saved originals for `revert` (one per line:
 #                                kind ns key value; value UNSET = was unset)
+#   ~/.config/adb-ai/frozen.txt  packages frozen BY adb-ai (only those that
+#                                were enabled before we froze them, so
+#                                --unfreeze-all inverts exactly our actions)
 # =============================================================================
 
 CONFIG_FILE="$HOME/.adb-ai.conf"
 STATE_DIR="$HOME/.config/adb-ai"
 STATE_FILE="$STATE_DIR/state.conf"
 BACKUP_FILE="$STATE_DIR/backups.txt"
+FROZEN_FILE="$STATE_DIR/frozen.txt"
 
 # --- Defaults (overridable via ~/.adb-ai.conf) ---
 # FB trio = Samsung's preinstalled Facebook service stubs (content pre-fetchers,
@@ -78,6 +82,8 @@ Options:
   --all                mem: tiers 0+1+2 then status
   --list               apps: show the configured kill list
   --top                apps: top memory consumers (from dumpsys meminfo)
+  --frozen             apps: list what adb-ai froze (tracked, revertible)
+  --unfreeze-all       apps: unfreeze everything adb-ai froze
   --stop PKG...        apps: force-stop packages (transient)
   --freeze PKG...      apps: pm disable-user (persistent; needs --force)
   --unfreeze PKG...    apps: pm enable
@@ -141,11 +147,20 @@ while [ $# -gt 0 ]; do
         --connect-port) [ $# -ge 2 ] || die "--connect-port needs a value"; CONNECT_PORT="$2"; shift ;;
         --pair-port)    [ $# -ge 2 ] || die "--pair-port needs a value"; PAIR_PORT="$2"; shift ;;
         --pair-code)    [ $# -ge 2 ] || die "--pair-code needs a value"; PAIR_CODE="$2"; shift ;;
-        --list|--top) APP_MODE="${1#--}" ;;
+        --list|--top|--frozen|--unfreeze-all) APP_MODE="${1#--}" ;;
         --stop|--freeze|--unfreeze)
             APP_MODE="${1#--}"; shift
-            [ $# -ge 1 ] || die "--$APP_MODE needs at least one package"
-            APP_PKGS=("$@"); shift $((${#APP_PKGS[@]} - 1)) ;;
+            # Collect package names until the next flag — "... pkg1 pkg2 --force"
+            # must not eat --force as a package (device-verified bug).
+            APP_PKGS=()
+            while [ $# -gt 0 ]; do
+                case "$1" in -*) break ;; esac
+                APP_PKGS+=("$1"); shift
+            done
+            [ ${#APP_PKGS[@]} -ge 1 ] || die "--$APP_MODE needs at least one package"
+            # The outer loop's shift would discard the flag we stopped on —
+            # reprocess it instead (or finish if packages ended the args).
+            if [ $# -eq 0 ]; then break; else continue; fi ;;
         -h|--help) usage ;;
         *) die "Unknown option: $1 (try --help)" ;;
     esac
@@ -697,13 +712,71 @@ cmd_status() {
 # apps command — kill list + freeze management
 # =============================================================================
 
-apps_freeze() { # pkg
-    adbx shell pm disable-user --user 0 "$1" >/dev/null 2>&1 \
-        && log "frozen: $1" || err "freeze failed: $1"
+frozen_add() { # pkg -> track as "frozen by us"
+    [ -f "$FROZEN_FILE" ] || { mkdir -p "$STATE_DIR"; : > "$FROZEN_FILE"; }
+    grep -qxF "$1" "$FROZEN_FILE" || echo "$1" >> "$FROZEN_FILE"
 }
-apps_unfreeze() {
-    adbx shell pm enable "$1" >/dev/null 2>&1 \
-        && log "unfrozen: $1" || err "unfreeze failed: $1"
+frozen_remove() { # pkg
+    [ -f "$FROZEN_FILE" ] || return 0
+    grep -vxF "$1" "$FROZEN_FILE" > "$FROZEN_FILE.tmp" 2>/dev/null || true
+    mv "$FROZEN_FILE.tmp" "$FROZEN_FILE"
+}
+
+pkg_disabled() { adbx shell pm list packages -d 2>/dev/null | strip_cr | grep -q "^package:$1$"; }
+
+apps_freeze() { # pkg — freeze + track. Only packages that were ENABLED get
+    # tracked: pre-disabled bloat (factory state) must not end up in our
+    # ledger, or --unfreeze-all would touch things we never changed.
+    if pkg_disabled "$1"; then
+        log "already frozen (not ours, not tracked): $1"
+        return 0
+    fi
+    if adbx shell pm disable-user --user 0 "$1" >/dev/null 2>&1; then
+        frozen_add "$1"
+        log "frozen + tracked: $1"
+    else
+        err "freeze failed: $1"
+    fi
+}
+apps_unfreeze() { # pkg — unfreeze + drop from ledger (also cleans stale entries)
+    if adbx shell pm enable "$1" >/dev/null 2>&1; then
+        frozen_remove "$1"
+        log "unfrozen: $1"
+    else
+        err "unfreeze failed: $1"
+    fi
+}
+
+apps_frozen_list() {
+    echo "Frozen by adb-ai (tracked in $FROZEN_FILE):"
+    if [ ! -s "$FROZEN_FILE" ]; then
+        echo "  (nothing tracked)"
+        return 0
+    fi
+    local p
+    while read -r p; do
+        [ -z "$p" ] && continue
+        if pkg_disabled "$p"; then echo "  $p (frozen)"; else echo "  $p (already re-enabled - stale entry)"; fi
+    done < "$FROZEN_FILE"
+}
+
+apps_unfreeze_all() {
+    if [ ! -s "$FROZEN_FILE" ]; then
+        log "Nothing tracked to unfreeze"
+        return 0
+    fi
+    if [ "$FORCE" = false ] && [ "$QUIET" = false ]; then
+        sed 's/^/  /' "$FROZEN_FILE"
+        read -rp "Unfreeze ALL tracked packages above? [y/N] " a
+        case "$a" in [Yy]*) ;; *) return 0 ;; esac
+    fi
+    local p
+    while read -r p; do
+        [ -z "$p" ] && continue
+        apps_unfreeze "$p"
+    done < "$FROZEN_FILE"
+    : > "$FROZEN_FILE"
+    log "All tracked freezes undone."
 }
 
 apps_run() {
@@ -716,11 +789,13 @@ apps_run() {
                 if pkg_installed "$p"; then echo "  $p (installed)"; else echo "  $p (not installed)"; fi
             done ;;
         top) tier0_run ;;
+        frozen) apps_frozen_list ;;
+        unfreeze-all) apps_unfreeze_all ;;
         stop)
             local p
             for p in "${APP_PKGS[@]}"; do force_stop "$p"; done ;;
         freeze)
-            [ "$FORCE" = true ] || { err "Freeze is persistent — add --force (unfreeze with 'adb-ai apps --unfreeze PKG')"; return 1; }
+            [ "$FORCE" = true ] || { err "Freeze is persistent — add --force (undo with 'adb-ai apps --unfreeze-all' or per-package --unfreeze)"; return 1; }
             local p; for p in "${APP_PKGS[@]}"; do apps_freeze "$p"; done ;;
         unfreeze)
             local p; for p in "${APP_PKGS[@]}"; do apps_unfreeze "$p"; done ;;
@@ -730,8 +805,10 @@ apps_run() {
                 echo "Apps:"
                 echo "  1) Kill list now (force-stop)"
                 echo "  2) Top memory consumers"
-                echo "  3) Freeze a package (pm disable-user)"
+                echo "  3) Freeze a package (pm disable-user, tracked)"
                 echo "  4) Unfreeze a package"
+                echo "  5) Show frozen (tracked)"
+                echo "  6) Unfreeze ALL tracked"
                 echo "  q) Back"
                 read -rp "Choice: " c
                 case "$c" in
@@ -739,6 +816,8 @@ apps_run() {
                     2) tier0_run ;;
                     3) read -rp "Package: " p; [ -n "$p" ] && apps_freeze "$p" ;;
                     4) read -rp "Package: " p; [ -n "$p" ] && apps_unfreeze "$p" ;;
+                    5) apps_frozen_list ;;
+                    6) apps_unfreeze_all ;;
                     q|Q|"") break ;;
                 esac
             done ;;

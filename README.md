@@ -143,6 +143,7 @@ RAM — the same RAM Ollama/aider need:
 adb-ai                  # pair once, connect, status
 adb-ai mem              # tiered menu: 0 info / 1 kills / 2 persistent / 3 root / revert
 adb-ai apps --top       # biggest Android memory consumers
+adb-ai apps --frozen    # exactly what adb-ai froze (tracked, revertible)
 adb-ai mem --t1         # kill list (Facebook, Instagram, …) + cached-process kill
 adb-ai revert           # restore every Tier-2 original
 ```
@@ -154,6 +155,10 @@ adb-ai revert           # restore every Tier-2 original
   reaps Termux/proot children mid-run) and saves every original; `adb-ai
   revert` restores them.
 - Config: `~/.adb-ai.conf` inside the Ubuntu home (kill list, caps).
+- Freezes are tracked: `apps --freeze` records every package **we** disabled
+  (pre-disabled bloat is never tracked) in `~/.config/adb-ai/frozen.txt`;
+  `apps --frozen` lists them, `apps --unfreeze PKG` / `--unfreeze-all` undo —
+  so undo inverts exactly our actions.
 - Device-verified result on a 12 GB S26: MemAvailable 2.4 → 5.1 GB, zram swap
   100% → 50% after Tier 1.
 
