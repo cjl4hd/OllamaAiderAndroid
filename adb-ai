@@ -365,6 +365,8 @@ pair_flow() {
         echo "Wireless debugging > 'Pair device with pairing code' shows a port + 6-digit code."
         echo "Tip: split the screen (or float this app over Settings) so the dialog stays up —"
         echo "the pairing port closes the instant the dialog is dismissed."
+        echo "Keep the phone awake: screen on / charging — Samsung drops wireless debugging"
+        echo "entirely when the screen sleeps."
         read -rp "Pairing port: " port
         read -rp "Pairing code: " code
         [ -n "$port" ] && [ -n "$code" ] || { err "Empty port/code"; return 1; }
@@ -432,8 +434,9 @@ connect_flow() {
         err "Auto-connect failed - re-run with --connect-port N (Wireless debugging screen), or toggle Wireless debugging and retry"
         return 1
     fi
-    echo "Auto-connect failed. Toggle Wireless debugging OFF/ON (port rotates), or read the"
-    echo "current port from Settings > Developer options > Wireless debugging."
+    echo "Auto-connect failed. Common cause: the screen slept (Samsung drops wireless"
+    echo "debugging on sleep) or Wireless debugging got toggled. Re-toggle it, keep the"
+    echo "screen on, then enter the port shown on the Wireless debugging screen."
     read -rp "Connect port (blank = give up): " port
     [ -n "$port" ] && try_connect "$port" && { log "Connected: $ADB_SERIAL"; return 0; }
     err "Could not connect (is Wireless debugging still on?)"
