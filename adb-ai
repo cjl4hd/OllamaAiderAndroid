@@ -320,18 +320,33 @@ port_open() { # port
 
 # Scan the phone's ephemeral port range for listeners (mdns is dead from proot,
 # device-verified; but proot shares the network namespace, so the adbd listener
-# IS reachable on loopback). 28k ports in ~30s with 48-way concurrency and a
-# fork-free inflight counter — a jobs|wc check per probe forked 2 processes per
+# IS reachable on loopback).
+#
+# Band: Android 14+ re-randomises the wireless-debugging port on every toggle,
+# sleep and reboot. Device-measured ports over a long session: 34457, 42103,
+# 43953, 44749, 46209 — all inside 34400-46300. We scan that band plus margin
+# rather than the whole 32768-60999 ephemeral range: 11901 vs 28232 ports, which
+# measured 6s vs 136s on-device (27x). The old full-range scan blew past every
+# caller's timeout, which is why auto-connect appeared broken.
+#
+# /proc/net/tcp would make this instant, but it is Permission denied inside proot
+# (same as /proc/net/route and /proc/swaps), so probing is the only option.
+# 96-way concurrency; 192 measured identical (I/O bound, not concurrency bound).
+# Fork-free inflight counter — a jobs|wc check per probe forked 2 processes per
 # probe and tripled the runtime (device-measured).
+SCAN_LO=34400
+SCAN_HI=46300
+SCAN_CONCURRENCY=96
+
 scan_candidates() {
     local tmp inflight=0 p
     tmp=$(mktemp)
-    for p in $(seq 32768 60999); do
+    for p in $(seq "$SCAN_LO" "$SCAN_HI"); do
         (
             port_open "$p" && echo "$p" >> "$tmp"
         ) &
         inflight=$((inflight+1))
-        if [ "$inflight" -ge 48 ]; then
+        if [ "$inflight" -ge "$SCAN_CONCURRENCY" ]; then
             wait -n || true
             inflight=$((inflight-1))
         fi
