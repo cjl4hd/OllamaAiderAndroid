@@ -54,7 +54,9 @@ T1=false; T2=false; T3=false; T0=false
 APP_MODE=""; APP_PKGS=()
 
 usage() {
-    cat <<EOF
+    # Quoted delimiter: the text contains backticks, which an unquoted heredoc
+    # would execute as command substitution ('adb-ai: command not found').
+    cat <<'EOF'
 Usage: adb-ai [COMMAND] [OPTIONS]
 
 Wireless adb to THIS phone + Android memory reduction. Run inside proot
