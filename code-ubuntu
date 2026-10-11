@@ -317,7 +317,14 @@ launch_aider() {
         echo "$MODEL" > "$LAST_FILE"
         select_project || return 0
         cd "$PROJECTS_DIR/$PROJECT_NAME"
-        exec aider --model "openai/$MODEL" --openai-api-base "$LLAMA_URL/v1"
+        # OPENAI_API_KEY must be set even for a local server (litellm refuses
+        # to authenticate without one, device-verified); OPENAI_API_BASE is
+        # belt-and-braces beside --openai-api-base for aider's litellm layer.
+        OPENAI_API_KEY="${OPENAI_API_KEY:-dummy-local-llama}"
+        export OPENAI_API_KEY OPENAI_API_BASE="$LLAMA_URL/v1"
+        exec aider --model "openai/$MODEL" --openai-api-base "$LLAMA_URL/v1" \
+            --openai-api-key "$OPENAI_API_KEY" \
+            --timeout 300
     fi
     select_model || return 0
     select_project || return 0
