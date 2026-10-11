@@ -145,7 +145,8 @@ Installed models:
  4) ☁ OpenCode cloud (its default model)
 ```
 
-- Pick a **local** model → OpenCode starts with `--model ollama/<name>` as before.
+- Pick a **local** model → OpenCode starts with `--model llamacpp/<model>` (the
+  server-side id, e.g. `llama-12cb…`).
 - Pick **cloud** → OpenCode starts bare, using its own default cloud model
   (no `--model` flag, no Ollama involvement). Useful when the phone's RAM is
   spoken for or you want a stronger model for a one-off task.
@@ -247,11 +248,14 @@ Cross-mounted for convenience (created by `update-ai`):
 - Termux home ↔ Ubuntu home (`ubuntu-home` / `termux-home` symlinks)
 - Android storage (`android-home` in both)
 
-Models remain in:
+Models live in:
 
 ```
-~/storage/shared/Models
+~/android-home/models   (Termux view; = /storage/emulated/0 on shared storage)
 ```
+
+Legacy Ollama blobs under `~/.ollama/models` remain loadable as a fallback;
+`clear-ai-cache` removes them behind a confirm prompt.
 
 ## For AI agents
 
@@ -263,10 +267,10 @@ Models remain in:
 
 ## Using OpenCode with a local model
 
-1. `code` → pick model → **7) OpenCode** → pick project. The launcher generates
-   `~/.config/opencode/opencode.json` inside Ubuntu (Ollama provider, all
-   installed models) and starts OpenCode with your model preselected
-   (`--model ollama/<name>`).
+Launch from `code-ubuntu` (menu 2, or `code` → 9 → 2). It generates
+`~/.config/opencode/opencode.json` inside Ubuntu (llamacpp provider, all
+models served by llama-server) and starts OpenCode with your model preselected
+(`--model llamacpp/<model>`).
 2. The provider talks to `http://127.0.0.1:11434/v1` — same loopback, since proot
    shares Android's network stack. Verify with `ollama ps` in a second Termux
    session while OpenCode generates.
