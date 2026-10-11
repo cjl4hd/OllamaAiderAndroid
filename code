@@ -4,12 +4,12 @@ set -e
 # =============================================================================
 # code — Termux-side launcher (host only).
 #
-# This half owns HOST things: the Ollama server and its env tuning, ollama
-# CLI chat + GGUF import, package updates, benchmarks. Everything that lives
-# inside proot Ubuntu (aider/opencode/freebuff pickers and launches, OpenCode
-# config, adb-ai) belongs to code-ubuntu — reached via menu option 8, which
-# runs ONE proot session with the Ubuntu-side menu. That split exists because
-# host vs container is the repo's #1 bug class (see AGENTS.md rule 1).
+# This half owns HOST things: the llama.cpp server and its tuning, GGUF
+# import, package updates, benchmarks. Everything that lives inside proot
+# Ubuntu (aider/opencode/freebuff pickers and launches, OpenCode config,
+# adb-ai) belongs to code-ubuntu — reached via menu option 9, which runs ONE
+# proot session with the Ubuntu-side menu. That split exists because host vs
+# container is the repo's #1 bug class (see AGENTS.md rule 1).
 #
 # If you are already in an 'ubuntu' shell, skip this script entirely and run
 # code-ubuntu directly.
@@ -33,56 +33,29 @@ ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 [ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
 #Pin the model store explicitly. A pkg upgrade of ollama can change the
-#binary's default data dir, which makes every existing model vanish from
-#"ollama list" while ~/.ollama/models is still full (seen on device: 7
-#manifests on disk, empty list). Pinning overrides any new default.
-#Override via OLLAMA_MODELS in ~/.ai-env.conf.
-export OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
-
-#Parameters to optimize for S26
-#Force flahs attention, mandatory to unlock kv cache quantization
-export OLLAMA_FLASH_ATTENTION=1
-
-#Compress attention vectors to 8 bit int
-export OLLAMA_KV_CACHE_TYPE=q8_0
-
-#Ensure only 1 model used at a time
-export OLLAMA_MAX_LOADED_MODELS=1
-
-#Single request slot: Ollama's default (4) multiplies the KV cache 4x, which
-#alone can push a 7b model past what the phone can hold. One user, one request
-#at a time - override via OLLAMA_NUM_PARALLEL in ~/.ai-env.conf.
-export OLLAMA_NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
-
-#Default context window for requests that don't set num_ctx. OpenCode's agent
-#loop wants 64k+, but phone RAM with q8_0 KV cache realistically caps lower.
-#Override via OLLAMA_CONTEXT_LENGTH in ~/.ai-env.conf.
-export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
-
-#Keep the last-used model resident. Ollama's default is 5m, and on a phone a
-#cold reload costs minutes - far worse than holding one model in idle RAM.
-#Override via OLLAMA_KEEP_ALIVE in ~/.ai-env.conf ("-1" forever, "0" unload
-#immediately, e.g. 30m if a big model squeezes the phone).
-export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
-
-#How long Ollama waits for a cold model load before giving up (default 5m).
-#Phone flash + big models have landed right at that edge; raise the headroom.
-#Override via OLLAMA_LOAD_TIMEOUT in ~/.ai-env.conf.
-export OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-15m}"
+#Model blob store (kept at the old Ollama path so nothing re-downloads):
+#llama-server loads individual .gguf files from here; new imports land in
+#LLAMA_MODELS_DIR (default ~/.llama/models).
+OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
+LLAMA_MODELS_DIR="${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
 
 # ============================================================================
-# llama.cpp server (the second engine, Phase 1 of the Ollama migration).
-# Serves the SAME GGUF blobs Ollama imported over an OpenAI-compatible API.
-# Menu 10 launches it; aider/OpenCode in Ubuntu can then point at it.
-# Override via LLAMA_SERVER_PORT / LLAMA_MODEL in ~/.ai-env.conf.
+# llama.cpp server (PRIMARY engine since the Phase 3 Ollama retirement).
+# Serves the GGUF blobs (kept under the old Ollama store path so nothing
+# re-downloads) over an OpenAI-compatible API. Menus 5/6 manage it; aider and
+# OpenCode in Ubuntu point at it. Override via LLAMA_SERVER_PORT / LLAMA_MODEL
+# in ~/.ai-env.conf.
 # ============================================================================
 LLAMA_SERVER_PORT="${LLAMA_SERVER_PORT:-8080}"
 LLAMA_MODEL="${LLAMA_MODEL:-auto}"
-#Context for llama-server. Ollama's ctx lives in OLLAMA_CONTEXT_LENGTH; keep
-#them independent so switching engines doesn't surprise-bump RAM.
 LLAMA_CONTEXT_LENGTH="${LLAMA_CONTEXT_LENGTH:-8192}"
 #Threads for llama-server decode. 4 measured on the S26 (aarch64, CPU only).
 LLAMA_THREADS="${LLAMA_THREADS:-4}"
+LLAMA_MODELS_DIR="${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
+
+lapi() { # path
+    timeout -k 2 10 curl -s "http://127.0.0.1:${LLAMA_SERVER_PORT:-8080}$1" </dev/null 2>/dev/null || true
+}
 
 #Resolve the installed llama-server (Termux pkg 'llama-cpp').
 llama_bin(){
@@ -92,15 +65,16 @@ done
 command -v llama-server 2>/dev/null
 }
 
-#Pick a GGUF blob when LLAMA_MODEL=auto: biggest blob under the Ollama store
-#(strict manifest->blob mapping is overkill for a pick-one heuristic).
+#Pick a GGUF when LLAMA_MODEL=auto: newest .gguf in the import dir, else the
+#biggest legacy Ollama blob (that store holds existing models; new imports
+#land in LLAMA_MODELS_DIR).
 llama_pick_model(){
-local store="${OLLAMA_MODELS:-$HOME/.ollama/models}"
-local blob=""
-if [ -d "$store/blobs" ]; then
-    blob=$(ls -S "$store"/blobs/sha256-* 2>/dev/null | head -1)
+local pick=""
+pick=$(ls -t "${LLAMA_MODELS_DIR:-$HOME/.llama/models}"/*.gguf 2>/dev/null | head -1)
+if [ -z "$pick" ]; then
+    pick=$(ls -S "${OLLAMA_MODELS:-$HOME/.ollama/models}"/blobs/sha256-* 2>/dev/null | head -1)
 fi
-[ -n "$blob" ] && { echo "$blob"; return 0; }
+[ -n "$pick" ] && { echo "$pick"; return 0; }
 return 1
 }
 
@@ -114,14 +88,14 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     return 0
 fi
 if [ "$LLAMA_MODEL" = "auto" ]; then
-    MODEL_PATH=$(llama_pick_model) || { echo "No GGUF blob under ${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs - import one via menu 2 first."; return 1; }
+    MODEL_PATH=$(llama_pick_model) || { echo "No .gguf found in ${LLAMA_MODELS_DIR:-$HOME/.llama/models} or the legacy Ollama blobs - import one via menu 2 first."; return 1; }
 else
     MODEL_PATH="$LLAMA_MODEL"
     [ -f "$MODEL_PATH" ] || { echo "LLAMA_MODEL=$MODEL_PATH (from ~/.ai-env.conf) does not exist."; return 1; }
 fi
 echo "Starting llama-server (port $LLAMA_SERVER_PORT, ctx $LLAMA_CONTEXT_LENGTH, threads $LLAMA_THREADS)..."
 : > "$HOME/.llama-server.log" 2>/dev/null || true
-#nohup + log file + health-check wait: the same shape as start_ollama.
+#nohup + log file + health-check wait.
 #(Do NOT background this inside a subshell/one-shot call - the child gets
 #cleaned up with the caller, device-verified.)
 #--alias replaces the sha256-blob-hash /v1/models id (llama-server serves the
@@ -158,23 +132,10 @@ return 0
 }
 
 #Restart = stop + start, so a config change reaches the running server
-#(same mental model as menu 5 for Ollama).
+#(menu 5).
 restart_llama_server(){
 stop_llama_server
 start_llama_server
-}
-
-start_ollama() {
-if ! pgrep -f "ollama serve" >/dev/null; then
- echo "Starting Ollama..."
- : > "$HOME/.ollama/serve.log" 2>/dev/null || true
- nohup ollama serve >> "$HOME/.ollama/serve.log" 2>&1 &
- sleep 3
-else
- #A pre-existing server was started with OLD env (e.g. before a model-dir
- #pin was added) - env changes only reach it via a restart.
- echo "Ollama already running - menu 5 restarts it if env/config changed"
-fi
 }
 
 #Free RAM in GB from /proc/meminfo (Android kernels expose MemAvailable).
@@ -182,44 +143,33 @@ free_ram_gb(){
 awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
 }
 
-#Model metadata via the Ollama HTTP API - the SAME parsing as code-ubuntu's
-#picker (kept in sync), so every menu shows identical info. The old ollama-CLI
-#header parsing came back empty on some builds; the API JSON does not.
-api(){ # path [post-data]
-local path="$1" data="${2:-}"
-if [ -n "$data" ]; then
- timeout -k 2 10 curl -s "http://127.0.0.1:11434$path" -d "$data" </dev/null 2>/dev/null || true
-else
- timeout -k 2 10 curl -s "http://127.0.0.1:11434$path" </dev/null 2>/dev/null || true
-fi
-}
-
-#Installed model names (MODELS) + on-disk sizes in GB (DISKS) from /api/tags.
-#Temp file, not process substitution (/dev/fd is unreliable in proot); sizes
-#get one decimal each - a missing newline here once merged two models' sizes
-#into one bogus value.
+#Installed model names (MODELS) + on-disk sizes in GB (DISKS) straight from
+#the GGUF files directory (no registry after the Ollama retirement - the
+#filesystem is the model list). Temp file, not process substitution (/dev/fd
+#is unreliable in proot); sizes get one decimal each - a missing newline here
+#once merged two models' sizes into one bogus value.
 load_models(){
-local tags t
-tags=$(api /api/tags)
-if [ -z "$tags" ]; then MODELS=(); DISKS=(); return 1; fi
-t=$(mktemp)
-printf '%s' "$tags" | grep -oE '"name": *"[^"]*"' | sed 's/.*"name": *"//; s/"$//' > "$t"
-mapfile -t MODELS < "$t"
-printf '%s' "$tags" | grep -oE '"size": *[0-9]+' | grep -oE '[0-9]+' | awk '{printf "%.1f\n", $1/1e9}' > "$t"
-mapfile -t DISKS < "$t"
-rm -f "$t"
+local dir="${LLAMA_MODELS_DIR:-$HOME/.llama/models}" t f sz
+#NOTE: find with -o needs explicit grouping; the double -maxdepth form below
+#would silently misparse. List the import dir and the legacy blob store
+#separately instead (blobs have no .gguf suffix, so they are matched as-is).
+{ find "$dir" -maxdepth 2 -name "*.gguf" 2>/dev/null;
+  find "${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs" -maxdepth 1 -type f -size +100M 2>/dev/null; } | sort -u > /tmp/ll_candidates.$$
+mapfile -t GFILES < /tmp/ll_candidates.$$
+rm -f /tmp/ll_candidates.$$
+MODELS=(); DISKS=()
+for f in "${GFILES[@]}"; do
+    [ -f "$f" ] || continue
+    MODELS+=("$f")
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    DISKS+=("$(awk -v b="$sz" 'BEGIN{printf "%.1f", b/1e9}')")
+done
+[ ${#MODELS[@]} -gt 0 ] || return 1
 }
 
-#One-line descriptor: parameter count, quantization, disk size (from /api/show).
-model_meta(){ # $1=model, $2=diskGB (may be empty) -> sets META
-local show params quant
-show=$(api /api/show "{\"model\":\"$1\"}")
-params=$(printf '%s' "$show" | grep -oE '"parameter_size": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
-quant=$(printf '%s' "$show" | grep -oE '"quantization_level": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
-META=""
-[ -n "$params" ] && META="$params"
-[ -n "$quant" ] && META="$META $quant"
-if [ -n "$2" ] && [ "$2" != "0.0" ]; then META="$META - ${2}GB disk"; fi
+#One-line descriptor: file path + size (no registry metadata anymore).
+model_meta(){ # $1=model path, $2=diskGB
+META="$2GB"
 return 0
 }
 
@@ -228,41 +178,28 @@ return 0
 #the truth even when the server is hung, and the parsing survives compact
 #JSON (one line, no spaces) on every Ollama build.
 status_banner(){
-local models loaded fr low
-models=$(api /api/tags | awk '{n+=gsub(/"name":/, "&")} END{print n+0}')
-loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v)} if (match($0, /"size": *[0-9]+/)) {s=substr($0, RSTART, RLENGTH); sub(/^"size": */, "", s)}} END{if (v != "") {if (s+0 > 0) printf "%s (%.1fGB)", v, s/1e9; else print v}}')
+local lm loaded fr low notify
+# llama.cpp is the primary engine (Ollama retired in Phase 3). Model id
+# comes from /v1/models; llama-server reports the live context in its log.
+lm=$(lapi "/v1/models" | grep -oE '"id": *"[^"]*"' | head -1 | sed 's/.*"id": *"//; s/"//')
 fr=$(free_ram_gb)
 echo "====================================="
 echo " AI Development Environment"
 echo "====================================="
-local up=""
-if [ -n "$(api /api/version)" ]; then
- up=1
- echo "Ollama : Running"
+if pgrep -x llama-server >/dev/null 2>&1; then
+ echo "llama.cpp : Running (http://127.0.0.1:${LLAMA_SERVER_PORT:-8080})"
+ echo "Model    : ${lm:-loading...}"
 else
- echo "Ollama : Unreachable (menu 5 restarts it)"
+ echo "llama.cpp : Not running (menu 5 starts it)"
+ echo "Model    : -"
 fi
-#Down -> "?": an empty /api/tags means unknown, not zero - don't claim the
-#models vanished just because the API is unreachable.
-if [ -z "$up" ]; then
- echo "Models  : ?"
- echo "Loaded  : ?"
-elif [ "$models" = "0" ]; then
- echo "Models  : 0  (add one: menu 2 imports a GGUF)"
- #"Loaded" = resident in RAM, not installed - after a restart it is none
- #until the first request; say so, or it reads like the models vanished.
- echo "Loaded  : ${loaded:-none (loads on first request)}"
-else
- echo "Models  : $models"
- echo "Loaded  : ${loaded:-none (loads on first request)}"
-fi
-echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
+echo "Ctx      : $LLAMA_CONTEXT_LENGTH"
 if [ -n "$fr" ]; then
  low=""
- if awk -v f="$fr" -v t="${ADB_AI_LOW_RAM_GB:-4}" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 7)"; fi
- echo "FreeRAM : ${fr}GB${low}"
+ if awk -v f="$fr" -v t="${ADB_AI_LOW_RAM_GB:-4}" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 8)"; fi
+ echo "FreeRAM  : ${fr}GB${low}"
 else
- echo "FreeRAM : ?GB"
+ echo "FreeRAM  : ?GB"
 fi
 echo
 return 0
@@ -296,9 +233,13 @@ return 0
 }
 
 chat(){
-#rc 130 = user cancelled -> back to the caller quietly (no stray ollama run).
+#Host chat: llama-server's own web UI/port-8080 is the primary engine now.
+#Start it on demand if it's down, then chat through llama-cli against it.
+pgrep -x llama-server >/dev/null 2>&1 || start_llama_server || return 0
 select_model_host || return 0
-ollama run "$MODEL"
+llama-cli -m "$MODEL" -c 4096 --simple 2>/dev/null || \
+    llama-cli -m "$MODEL" -cv 2>/dev/null || \
+    { echo "Chat failed - try menu 9's web UI: http://127.0.0.1:${LLAMA_SERVER_PORT:-8080}"; return 1; }
 }
 
 #Menu action: run the Ubuntu-side dev menu (aider/opencode/freebuff/adb-ai)
@@ -324,39 +265,15 @@ while true; do
 done
 echo "GGUF files:"
 select f in "${G[@]}"; do [ -n "$f" ] && break; done
-read -p "Model name: " N
-TMP=$(mktemp)
-echo "FROM \"$f\"" > "$TMP"
-ollama create "$N" -f "$TMP"
-rm -f "$TMP"
+# No registry anymore (Ollama retired): importing = moving the file into the
+# models dir llama-server loads from. cp first so the source stays until the
+# copy landed (phone flash interrupting a mv is how files used to vanish).
+mkdir -p "${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
+cp -v "$f" "${LLAMA_MODELS_DIR:-$HOME/.llama/models}/" \
+    && echo "Imported: available to llama-server on next start (menu 5)."
 }
 
-#Restart: no blind sleep. If the old server still holds 11434 when the new
-#one starts, the new one dies silently on bind (output discarded) and every
-#later API call talks to the surviving old process - with stale env, e.g. a
-#model dir pin that never took effect. Wait for exit, then for the API.
-restart_ollama(){
-local i
-pkill ollama 2>/dev/null || true
-for i in $(seq 1 20); do
-    pgrep -f "ollama serve" >/dev/null || break
-    sleep 0.5
-done
-if pgrep -f "ollama serve" >/dev/null; then
-    echo "Old Ollama not exiting - sending SIGKILL..."
-    pkill -9 -f "ollama serve" 2>/dev/null || true
-    sleep 1
-fi
-#Log server output instead of /dev/null: a failed bind must be visible.
-: > "$HOME/.ollama/serve.log" 2>/dev/null || true
-nohup ollama serve >> "$HOME/.ollama/serve.log" 2>&1 &
-for i in $(seq 1 30); do
-    curl -s -m 2 http://127.0.0.1:11434/api/version </dev/null >/dev/null 2>&1 && return 0
-    sleep 1
-done
-echo "Ollama did not come up within 30s - check $HOME/.ollama/serve.log"
-return 1
-}
+
 
 bench_model(){
 #|| true: see select_model_host - the count check handles the empty case.
@@ -377,63 +294,57 @@ case "$c" in ''|*[!0-9]*) c=1 ;; esac
 [ "$c" -lt 1 ] && c=1
 [ "$c" -gt ${#MODELS[@]} ] && c=${#MODELS[@]}
 MODEL="${MODELS[$((c-1))]}"
-echo "Benchmarking $MODEL (warmup + decode probe + prefill probe, ~2-5 min)..."
-#Warmup: forces the model fully resident so the probes measure compute,
-#not cold-load. keep_alive=-1 keeps it resident for repeat runs.
-curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"hi","raw":true,"keep_alive":-1}' >/dev/null
-#Decode probe: short prompt, generous num_predict (Ollama's default cap of 128
-#can end the run early). stream:false returns one JSON with full timing stats.
-RESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"Count from 1 to 100.","raw":true,"keep_alive":-1,"num_predict":256,"stream":false}')
-EVALC=$(printf '%s' "$RESP" | grep -o '"eval_count":[0-9]*' | cut -d: -f2 | tail -1)
-EVALD=$(printf '%s' "$RESP" | grep -o '"eval_duration":[0-9]*' | cut -d: -f2 | tail -1)
-#Prefill probe: a big no-op prompt (num_predict=1 keeps output negligible)
-#makes prompt_eval dominate - this is the per-turn cost of OpenCode's fat
-#agent prompts.
-PREFILL_PROMPT=$(printf 'x%.0s' $(seq 1 400))
-PRESP=$(curl -s -m 300 http://127.0.0.1:11434/api/generate -d '{"model":"'"$MODEL"'","prompt":"'"$PREFILL_PROMPT"'","raw":true,"keep_alive":-1,"num_predict":1,"stream":false}')
-PROMPTC=$(printf '%s' "$PRESP" | grep -o '"prompt_eval_count":[0-9]*' | cut -d: -f2 | tail -1)
-PROMPTD=$(printf '%s' "$PRESP" | grep -o '"prompt_eval_duration":[0-9]*' | cut -d: -f2 | tail -1)
+echo "Benchmarking $(basename "$MODEL") via llama-server probes (~2-5 min)..."
+#Server reload with the chosen file (stop/start is how a model switches).
+stop_llama_server
+LLAMA_MODEL="$MODEL" start_llama_server || { echo "Server start failed - cannot benchmark."; return 1; }
+ID=$(lapi /v1/models | grep -oE '"id": *"[^"]*"' | head -1 | sed 's/.*"id": *"//; s/"//')
+[ -z "$ID" ] && { echo "No model registered on the server."; return 1; }
+#Warmup.
+curl -s -m 300 "http://127.0.0.1:$LLAMA_SERVER_PORT/v1/chat/completions" \
+ -H "Content-Type: application/json" \
+ -d "{\"model\":\"$ID\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":8,\"stream\":false\}" >/dev/null
+#Decode probe: llama-server's timings block carries predicted_ms/predicted_n.
+DRESP=$(curl -s -m 300 "http://127.0.0.1:$LLAMA_SERVER_PORT/v1/chat/completions" \
+ -H "Content-Type: application/json" \
+ -d "{\"model\":\"$ID\",\"messages\":[{\"role\":\"user\",\"content\":\"Count from 1 to 100 without explanation\"}],\"max_tokens\":256,\"stream\":false\}")
+EVALC=$(printf '%s' "$DRESP" | grep -o '"predicted_n":[0-9]*' | cut -d: -f2 | head -1)
+EVALD=$(printf '%s' "$DRESP" | grep -o '"predicted_ms":[0-9.]*' | cut -d: -f2 | head -1)
+#Prefill probe: a fat no-op prompt makes prompt processing dominate - the
+#per-turn cost of OpenCode's fat agent prompts.
+NP=$(printf 'x%.0s' $(seq 1 400))
+PRESP=$(curl -s -m 300 "http://127.0.0.1:$LLAMA_SERVER_PORT/v1/chat/completions" \
+ -H "Content-Type: application/json" \
+ -d "{\"model\":\"$ID\",\"messages\":[{\"role\":\"user\",\"content\":\"$NP\"}],\"max_tokens\":1,\"stream\":false\}")
+PROMPTC=$(printf '%s' "$PRESP" | grep -o '"prompt_n":[0-9]*' | cut -d: -f2 | head -1)
+PROMPTD=$(printf '%s' "$PRESP" | grep -o '"prompt_ms":[0-9.]*' | cut -d: -f2 | head -1)
 if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
- EVALC=$(printf '%s' "$RESP" | grep -c '"response"')
- EVALD=""
-fi
-if [ -z "$EVALC" ] || [ "$EVALC" = "0" ]; then
- echo "No output generated - check 'ollama ps' and try again."
+ echo "No output generated - check $HOME/.llama-server.log and try again."
  return 1
 fi
-#Durations are nanoseconds: tok/s = count / (duration / 1e9). 2 decimals so
-#sub-tok/s phone speeds stay meaningful.
-DECODE=$(awk -v c="$EVALC" -v d="$EVALD" 'BEGIN{ if (d+0 > 0) printf "%.2f", c/(d/1e9); else print "?" }')
+#timings are milliseconds: tok/s = count / (ms/1000). 2 decimals so sub-tok/s
+#phone speeds stay meaningful.
+DECODE=$(awk -v c="$EVALC" -v d="$EVALD" 'BEGIN{ if (d+0 > 0) printf "%.2f", c/(d/1000); else print "?" }')
 PREFILL=""
 if [ -n "$PROMPTC" ] && [ "$PROMPTC" != "0" ] && [ -n "$PROMPTD" ]; then
- PREFILL=$(awk -v c="$PROMPTC" -v d="$PROMPTD" 'BEGIN{ printf "%.2f", c/(d/1e9) }')
+ PREFILL=$(awk -v c="$PROMPTC" -v d="$PROMPTD" 'BEGIN{ if (d+0 > 0) printf "%.2f", c/(d/1000); else print "?" }')
 fi
 echo "decode probe: $EVALC tokens"
 echo "  decode:  ${DECODE} tok/s  (generation speed)"
 [ -n "$PREFILL" ] && echo "  prefill: ${PREFILL} tok/s  (prompt processing, 400-token probe)"
-#Actual loaded footprint (weights + KV cache at the active ctx) from /api/ps:
-#KV-cache RAM varies with architecture, so measure it instead of estimating.
-PS_JSON=$(curl -s -m 5 http://127.0.0.1:11434/api/ps)
-PSIZE=$(printf '%s' "$PS_JSON" | grep -o '"size":[0-9.]*' | cut -d: -f2 | head -1)
-PCTX=$(printf '%s' "$PS_JSON" | grep -o '"context_length":[0-9]*' | cut -d: -f2 | head -1)
-if [ -n "$PSIZE" ]; then
- PSGB=$(awk -v b="$PSIZE" 'BEGIN{ printf "%.1f", b/1e9 }')
- echo "  loaded:  ${PSGB}GB RAM (weights + KV cache${PCTX:+ at ctx $PCTX})"
-fi
-echo "Use bench.py / bench_all.py for llama.cpp-level detail."
+echo "Use bench.py / bench_all.py for llama.cpp-level detail (direct llama-cli)."
 }
 
-start_ollama
 status_banner
 echo "1) Chat"
 echo "2) Import GGUF"
 echo "3) Update AI"
 echo "4) Doctor AI"
-echo "5) Restart Ollama"
-echo "6) Benchmark Model"
-echo "7) Clear Cache"
-echo "8) Ubuntu Dev Menu (aider / opencode / freebuff / android memory)"
-echo "9) llama.cpp server (start/restart/stop - serves the same GGUFs)"
+echo "5) llama.cpp: Start/Restart server"
+echo "6) llama.cpp: Stop server"
+echo "7) Benchmark Model"
+echo "8) Clear Cache"
+echo "9) Ubuntu Dev Menu (aider / opencode / freebuff / android memory)"
 echo "10) Quit"
 read -p "Choice: " m || exit 0
 case "$m" in
@@ -441,17 +352,10 @@ case "$m" in
 2) import_model;;
 3) update-ai;;
 4) doctor-ai;;
-5) restart_ollama || true;;
-6) bench_model;;
-7) clear-ai-cache;;
-8) ubuntu_menu;;
-9)
-    echo "1) Start/Restart  2) Stop  0) Back"
-    read -p "llama-server: " l
-    case "$l" in
-        1) restart_llama_server || true;;
-        2) stop_llama_server;;
-    esac
-    ;;
+5) restart_llama_server || true;;
+6) stop_llama_server;;
+7) bench_model;;
+8) clear-ai-cache;;
+9) ubuntu_menu;;
 *) exit 0;;
 esac

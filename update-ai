@@ -25,7 +25,8 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Updates the Android AI development environment
-(Termux + proot Ubuntu + Ollama + llama.cpp + Aider).
+(Termux + proot Ubuntu + llama.cpp + Aider; Ollama retired but its model
+blobs remain usable).
 
 Also installs the 'clear-ai-cache' command for freeing disk space used by caches.
 
@@ -47,27 +48,13 @@ Environment (via ~/.ai-env.conf):
                         or no (never install) (default: ask)
   FREEBUFF             Freebuff install preference: ask (prompt if not installed)
                         or no (never install) (default: ask)
-  OLLAMA_CONTEXT_LENGTH  Ollama default context window (default: 16384). OpenCode
-                        wants 64k+; lower it if RAM-constrained.
-  OLLAMA_NUM_PARALLEL    Concurrent request slots (default: 1). Each slot multiplies
-                        KV-cache RAM; keep it at 1 on phones.
-  OLLAMA_KEEP_ALIVE    How long a model stays loaded after use (default: -1 =
-                        forever). Reloads cost minutes on a phone; override to
-                        e.g. 30m only if a big model squeezes RAM.
-  OLLAMA_LOAD_TIMEOUT    Max wait for a cold model load before Ollama aborts
-                        (default: 15m; Ollama's own default of 5m is tight for
-                        phone flash + large GGUFs).
-  OLLAMA_MODELS       Model store directory (default: ~/.ollama/models). Pinned
-                        explicitly so an ollama package upgrade can never point
-                        the server at a fresh empty dir and hide your models.
-  LLAMA_SERVER_PORT   llama.cpp server port (default: 8080). 'code' menu 9
-                        starts/stops it; Ubuntu's aider/OpenCode reach it via
-                        http://127.0.0.1:$LLAMA_SERVER_PORT/v1.
-  LLAMA_MODEL         GGUF path for llama-server (default: auto = biggest
-                        blob under OLLAMA_MODELS/blobs). Set an explicit path
-                        to pin one model file.
-  LLAMA_CONTEXT_LENGTH  llama-server context window (default: 8192). Kept
-                        separate from OLLAMA_CONTEXT_LENGTH on purpose.
+  LLAMA_MODELS_DIR    Import dir for .gguf files the server loads (default:
+                        ~/.llama/models). The legacy Ollama blob store remains
+                        readable as a fallback model source.
+  LLAMA_MODEL         GGUF path for llama-server (default: auto = newest
+                        .gguf in LLAMA_MODELS_DIR, else biggest legacy Ollama
+                        blob). Set an explicit path to pin one model file.
+  LLAMA_CONTEXT_LENGTH  llama-server context window (default: 8192).
   LLAMA_THREADS       llama-server compute threads (default: 4; measured on
                         the aarch64 phone).
   BMOE_PROJECT_DIR   BigMoeOnEdge clone path INSIDE Ubuntu (default:
@@ -383,12 +370,9 @@ PROJECT_NAME=$PROJECT_NAME
 # GGUF_DIR=/storage/emulated/0/Models
 # OPENCODE=ask
 # FREEBUFF=ask
-# OLLAMA_CONTEXT_LENGTH=16384
-# OLLAMA_NUM_PARALLEL=1
-# OLLAMA_KEEP_ALIVE=-1
-# OLLAMA_LOAD_TIMEOUT=15m
 # LLAMA_SERVER_PORT=8080
 # LLAMA_MODEL=auto
+# LLAMA_MODELS_DIR=$HOME/.llama/models
 # LLAMA_CONTEXT_LENGTH=8192
 # LLAMA_THREADS=4
 # ADB_AI_AUTO_CLEAN=ask
@@ -451,14 +435,14 @@ if [ -d "$GGUF_DIR" ] && [ -z "$(ls -A "$GGUF_DIR" 2>/dev/null)" ]; then
 fi
 
 # =============================================================================
-# 5b. llama.cpp (on Host) — second engine (Phase 1 of the Ollama migration).
+# 5b. llama.cpp (on Host) — PRIMARY engine (Ollama retired in Phase 3).
 # pkg-installed (Termux ships 'llama-cpp' with Vulkan backend); it serves the
 # SAME GGUF blobs Ollama manages over an OpenAI-compatible API. Not fatal when
-# missing: 'code' menu 9 and its Ubuntu-side flows degrade to a friendly error.
+# missing: 'code' menu 5/6 and its Ubuntu-side flows degrade to a friendly error.
 log "===== llama.cpp ====="
 if ! command -v llama-server >/dev/null 2>&1; then
     log "llama.cpp not found - installing (pkg llama-cpp)..."
-    pkg install llama-cpp -y || err "llama-cpp install failed - 'code' menu 9 will not work; run 'pkg install llama-cpp' manually"
+    pkg install llama-cpp -y || err "llama-cpp install failed - 'code' menus 5/6 will not work; run 'pkg install llama-cpp' manually"
 else
     log "llama.cpp found - checking for updates..."
     pkg upgrade llama-cpp -y || err "llama-cpp upgrade failed - continuing"
@@ -495,25 +479,23 @@ fi
 # =============================================================================
 
 log ""
-log "===== Ollama ====="
-
-if ! command -v ollama >/dev/null 2>&1; then
-    log "Ollama not found - installing..."
-    pkg install ollama -y
-else
-    log "Ollama found - checking for updates..."
-    pkg upgrade ollama -y
-fi
-
-# A package upgrade can change the binary's default data dir, which makes
-# every model vanish from "ollama list" while ~/.ollama/models is still full
-# (device-observed). Pin the store and warn loudly if the models are unseen.
-export OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
-if command -v ollama >/dev/null 2>&1 && [ -d "$HOME/.ollama/models/manifests" ] \
-    && [ -z "$(OLLAMA_MODELS="$OLLAMA_MODELS" ollama list 2>/dev/null | awk 'NR>1')" ]; then
-    err "$OLLAMA_MODELS has manifests but 'ollama list' is empty - the binary's"
-    err "default model dir may have changed. 'code' now pins OLLAMA_MODELS;"
-    err "restart via 'code' > 5) Restart Ollama, then re-run 'update-ai'."
+log "===== Legacy Ollama (optional cleanup) ====="
+# Ollama was retired in Phase 3 of the engine migration; llama.cpp is the
+# primary engine. Existing model blobs stay readable to llama-server — do
+# NOT delete them here. Removing the package is the user's call, prompted.
+if command -v ollama >/dev/null 2>&1; then
+    log "Ollama is still installed (retired - 'code' no longer uses it)."
+    log "Its model blobs under ~/.ollama/models are still used by llama-server"
+    log "(menu 7 clears them if you want the space back)."
+    if [ "$FORCE" = true ] || [ "$QUIET" = true ]; then
+        log "Skipping ollama package removal (run interactively to be asked)"
+    else
+        read -p "Uninstall the ollama package now (frees ~1.5GB, keeps model blobs)? [y/N] " ans
+        case "$ans" in
+            [Yy]*) pkg uninstall ollama -y && log "Ollama package removed." ;;
+            *) log "Keeping the ollama package." ;;
+        esac
+    fi
 fi
 
 # =============================================================================

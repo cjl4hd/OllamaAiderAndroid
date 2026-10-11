@@ -110,13 +110,11 @@ report_sizes() {
         find "$HOME/projects" -maxdepth 2 \( -name ".aider.chat.history.md" -o -name ".aider.input.history" \) -exec du -sh {} + 2>/dev/null | awk -v h="$HOME" "{sub(h,\"~\"); print \"   \" \$0}"
     ' 2>/dev/null || log "Warning: could not measure Ubuntu caches"
 
-    log "--- Tier 2: Ollama models (host) ---"
-    if command -v ollama >/dev/null 2>&1; then
-        ollama list 2>/dev/null | awk 'NR>1{printf "   %-8s %s\n", $3, $1}' | sort -rh || true
-        ollama list 2>/dev/null | awk 'NR>1{s+=$3} END{if(s) printf "   Total model size: %.1fG\n", s}'
-    else
-        log "   ollama not installed"
-    fi
+    log "--- Tier 2: model GGUFs (host; kept unless confirmed below) ---"
+    # Post-retirement there is no registry; the filesystem is the model list.
+    { du -sm "${LLAMA_MODELS_DIR:-$HOME/.llama/models}"/ 2>/dev/null;
+      du -sm "${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs" 2>/dev/null; } | \
+        awk '{printf "   %6.1fGB  %s\n", $1/1024, $2}'
     log ""
 }
 
@@ -171,20 +169,17 @@ if confirm "Delete aider chat history and input history for all projects? This c
     ' 2>/dev/null && log "Aider chat history cleared."
 fi
 
-if command -v ollama >/dev/null 2>&1 && [ "$(ollama list 2>/dev/null | awk 'NR>1' | wc -l)" -gt 0 ]; then
-    if confirm "Remove installed Ollama models to free space? (keeps your last-used model)"; then
-        LAST_FILE="$HOME/.config/code/last_model"
-        LAST=$(cat "$LAST_FILE" 2>/dev/null || echo "")
-        while read -r name size; do
-            [ -z "$name" ] && continue
-            if [ "$name" = "$LAST" ]; then
-                log "Keeping last-used model: $name ($size)"
-                continue
-            fi
-            if confirm "Remove model '$name' ($size)?"; then
-                ollama rm "$name" >/dev/null 2>&1 && log "Removed $name"
-            fi
-        done < <(ollama list 2>/dev/null | awk 'NR>1{print $1, $3}')
+STORE="${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs"
+if [ -d "$STORE" ] && [ "$(du -sm "$STORE" 2>/dev/null | awk '{print $1}')" -gt 0 ]; then
+    if confirm "Delete the LEGACY Ollama blob store ($STORE)? Files there back up models llama-server can still load; keep unless you import fresh GGUFs."; then
+        rm -rf "$STORE" && log "Legacy Ollama blobs removed."
+    fi
+fi
+if [ -d "${LLAMA_MODELS_DIR:-$HOME/.llama/models}" ]; then
+    if confirm "Remove individual .gguf files from ${LLAMA_MODELS_DIR:-$HOME/.llama/models}?"; then
+        find "${LLAMA_MODELS_DIR:-$HOME/.llama/models}" -maxdepth 2 -name '*.gguf' | while read -r f; do
+            confirm "Delete '$(basename "$f")'?" && rm -f "$f" && log "Deleted $(basename "$f")"
+        done
     fi
 fi
 

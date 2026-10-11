@@ -1,8 +1,9 @@
 # Android AI Development Environment
 
 A set of scripts to install and run a full AI coding environment on an Android phone:
-Ollama on Termux (host), plus Aider and OpenCode inside a proot-distro Ubuntu
-container — all on-device, no cloud required.
+llama.cpp (`llama-server`) on Termux (host), plus Aider and OpenCode inside a
+proot-distro Ubuntu container — all on-device, no cloud required. Ollama was
+retired as the serving engine; its model blobs remain usable.
 
 ## Setup
 
@@ -15,8 +16,8 @@ code
 ```
 
 `update-ai` runs non-interactively-safe first-time setup: installs proot Ubuntu,
-Python 3.12 + Aider (via uv), Ollama, optionally OpenCode, and links everything
-into Termux's bin.
+Python 3.12 + Aider (via uv), llama.cpp (pkg `llama-cpp`), optionally OpenCode,
+and links everything into Termux's bin.
 
 ## Hardware
 
@@ -30,12 +31,13 @@ into Termux's bin.
 ```
 Android
 └── Termux (host)
-    ├── Ollama            ← tuned per phone: flash attention, q8_0 KV cache,
-    │                       1 loaded model at a time (set in `code`)
+    ├── llama-server      ← primary engine: OpenAI-compatible API on :8080,
+    │                       --alias naming, user-tunable ctx/threads in `code`
     └── proot-distro
         └── Ubuntu
-            ├── Aider      ← repo-map editing, git-integrated
+            ├── Aider      ← repo-map editing, git-integrated (via openai/ API)
             ├── OpenCode   ← agentic editor (optional, via update-ai)
+            ├── bmoe-cli   ← BigMoeOnEdge: streams MoE models bigger than RAM
             └── projects (git)
 ```
 
@@ -43,15 +45,15 @@ Android
 
 | Command | Runs | What it does |
 |---|---|---|
-| `code` | Termux | Interactive host launcher: chat, GGUF import, benchmarks, server; option 8 opens the Ubuntu dev menu |
+| `code` | Termux | Interactive host launcher: chat, GGUF import, benchmarks, server control; option 9 opens the Ubuntu dev menu |
 | `update-ai` | Termux | Install/update everything; creates `~/.ai-env.conf` |
 | `doctor-ai` | Termux | Health checks: installs, server, API reachability, versions |
 | `clear-ai-cache` | Termux | Tiered cache cleanup (Tier 1 safe / Tier 2 destructive) |
 | `adb-ai` | Ubuntu (proot) | Wireless adb to the phone itself + Android memory tiers: kill hogs (Facebook/Instagram), phantom-killer off, revert; run `ubuntu` first |
 | `ubuntu` | Termux | Shell into the Ubuntu container |
-| `code-ubuntu` | Ubuntu (proot) | Dev-side launcher: aider/opencode/freebuff menus, pickers via the Ollama API, adb-ai; runs bare in an `ubuntu` shell too |
+| `code-ubuntu` | Ubuntu (proot) | Dev-side launcher: aider/opencode/freebuff menus, model pickers via llama-server, adb-ai; runs bare in an `ubuntu` shell too |
 | `aider-ubuntu` | Termux | Run aider with args, e.g. `aider-ubuntu --model qwen --chat-mode ask` |
-| `add_models.sh` | Termux | One-shot `ollama create` for the Modelfiles in this repo |
+| `add_models.sh` | Termux | Legacy: one-shot `ollama create` — superseded by menu 2 (file import) |
 | `uv_aider_install.sh` | Ubuntu | Manual fallback install of uv + Python 3.12 + aider-chat |
 | `bmoe-cli` | Ubuntu | BigMoeOnEdge engine (built from `~/projects/BigMoeOnEdge` by `update-ai`): runs MoE models larger than RAM by streaming expert weights from flash; `--session` JSON protocol, `--decide` single-prefill choices |
 | `bench.py` | Termux | Per-model llama.cpp benchmark → `benchmark.csv` |
@@ -59,37 +61,35 @@ Android
 
 ### `code` menu (Termux — host side)
 
-1. Chat (`ollama run` with the chosen model)
-2. Import GGUF (pick a `.gguf` from the models dir, name it, `ollama create`)
+1. Chat (starts llama-server on demand, then `llama-cli --simple` against it)
+2. Import GGUF (pick a `.gguf` from the models dir → copied into
+   `LLAMA_MODELS_DIR`; no registry — the file is the model)
 3. Update AI (delegates to `update-ai`)
 4. Doctor AI (delegates to `doctor-ai`)
-5. Restart Ollama
-6. Benchmark Model (model picker → decode + prefill probes → tok/s at 2
-   decimals, plus the model's actual loaded RAM from Ollama's `/api/ps` —
-   weights + KV cache at the active context; bench.py / bench_all.py remain
-   the deep benchmarks)
-7. Clear Cache (delegates to `clear-ai-cache`)
-8. Ubuntu Dev Menu — one proot session running `code-ubuntu` (below)
-9. llama.cpp server — start/restart (menu 9 > 1) or stop (9 > 2). Serves the
-   SAME GGUF blobs Ollama imported, over an OpenAI-compatible API on
-   `LLAMA_SERVER_PORT` (8080). `LLAMA_MODEL=auto` picks the biggest blob;
-   set an explicit path in `~/.ai-env.conf` to pin one. Ubuntu-side
-   aider/OpenCode offer this engine in their pickers when it's running.
+5. llama.cpp: Start/Restart server (loads `LLAMA_MODEL`, serves on
+   `LLAMA_SERVER_PORT` 8080 with a readable `--alias`; `auto` = newest .gguf
+   in `LLAMA_MODELS_DIR`, else biggest legacy Ollama blob)
+6. llama.cpp: Stop server
+7. Benchmark Model (picker → server restart with that file → decode + prefill
+   probes via llama-server's `timings` → tok/s at 2 decimals; bench.py /
+   bench_all.py remain the deep llama-cli benchmarks)
+8. Clear Cache (delegates to `clear-ai-cache`)
+9. Ubuntu Dev Menu — one proot session running `code-ubuntu` (below)
 10. Quit
 
 ### `code-ubuntu` menu (Ubuntu — dev side; also runs bare in an `ubuntu` shell)
 
-1. Aider (model picker → project picker → aider; pre-launch quick clean when
-   free RAM is under `ADB_AI_LOW_RAM_GB`, `ADB_AI_AUTO_CLEAN=ask`. If the
-   llama.cpp server is running, an engine sub-choice appears first:
-   Ollama default, or `openai/<model>` against llama.cpp's `/v1` API)
-2. OpenCode (model picker incl. cloud entry → project picker → opencode;
-   generates the Ollama provider config on first run. When the llama.cpp
-   server is up, an engine sub-choice offers its OpenAI-compatible provider
-   (`llamacpp/<model>`) instead)
+1. Aider (llama.cpp model picker → project picker → aider on
+   `openai/<model>` against llama-server; pre-launch quick clean when free
+   RAM is under `ADB_AI_LOW_RAM_GB`, `ADB_AI_AUTO_CLEAN=ask`. Note: litellm
+   requires an API key even for a local server — a dummy key is exported
+   automatically.)
+2. OpenCode (llama.cpp model picker incl. cloud entry → project picker →
+   opencode; the `llamacpp` provider config in `~/.config/opencode/opencode.json`
+   is generated/refreshed automatically — schema requires `limit.output`) 
 3. Freebuff (project picker → freebuff; cloud models, no API key)
 4. Regen OpenCode Config (overwrite `~/.config/opencode/opencode.json` from
-   the current Ollama model list — use after importing a new model)
+   the current llama-server model list — use after importing a new model)
 5. Android Memory (adb-ai) — wireless adb to the phone, tiered Android memory
    reduction (0 info / 1 safe kills / 2 persistent incl. phantom-killer off /
    3 root-gated, plus revert and tracked freezes)
@@ -97,8 +97,9 @@ q. Back
 
 Subcommands: `code-ubuntu aider|opencode|freebuff|regen-oc|mem|status`.
 
-Note: `code-ubuntu` talks to Ollama over HTTP via `curl` — `update-ai` installs
-and checks it inside Ubuntu alongside the other container-side packages.
+Note: `code-ubuntu` talks to llama-server over HTTP via `curl` — `update-ai`
+installs and checks curl inside Ubuntu alongside the other container-side
+packages.
 
 ## Configuration
 
@@ -114,14 +115,10 @@ and checks it inside Ubuntu alongside the other container-side packages.
 | `GGUF_DIR` | `/storage/emulated/0/Models` | Where `.gguf` model files are imported from |
 | `OPENCODE` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
-| `OLLAMA_CONTEXT_LENGTH` | `16384` | Ollama default context window. OpenCode wants 64k+; lower if RAM-constrained |
-| `OLLAMA_NUM_PARALLEL` | `1` | Concurrent request slots. Ollama's default (4) multiplies KV-cache RAM 4x; keep at 1 on phones |
-| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model loaded forever. Reloads cost minutes on a phone; set e.g. `30m` only if a big model squeezes RAM |
-| `OLLAMA_LOAD_TIMEOUT` | `15m` | Max wait for a cold load. Ollama's default 5m is tight for phone flash + large GGUFs |
-| `OLLAMA_MODELS` | `~/.ollama/models` | Model store, pinned explicitly so an ollama package upgrade can't point the server at an empty dir and hide your models |
-| `LLAMA_SERVER_PORT` | `8080` | llama.cpp server port ('code' menu 9). Ubuntu's aider/OpenCode reach it over loopback |
-| `LLAMA_MODEL` | `auto` | GGUF path for llama-server; `auto` = biggest blob under `OLLAMA_MODELS/blobs` |
-| `LLAMA_CONTEXT_LENGTH` | `8192` | llama-server context window (separate from Ollama's, on purpose) |
+| `LLAMA_SERVER_PORT` | `8080` | llama.cpp server port ('code' menus 5/6). Ubuntu's aider/OpenCode reach it over loopback |
+| `LLAMA_MODEL` | `auto` | GGUF path for llama-server; `auto` = newest `.gguf` in `LLAMA_MODELS_DIR`, else biggest legacy Ollama blob |
+| `LLAMA_MODELS_DIR` | `~/.llama/models` | Import dir for `.gguf` files (menu 2 copies them here) |
+| `LLAMA_CONTEXT_LENGTH` | `8192` | llama-server context window |
 | `LLAMA_THREADS` | `4` | llama-server compute threads (measured on-device) |
 | `BMOE_PROJECT_DIR` | `/root/projects/BigMoeOnEdge` | BigMoeOnEdge clone path inside Ubuntu that `update-ai` pulls + builds + installs (`bmoe-cli`, streamed MoE engine) |
 | `ADB_AI_AUTO_CLEAN` | `ask` | Pre-launch Android quick clean from `code` when RAM is low: `ask` / `always` / `never` |

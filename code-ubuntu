@@ -39,20 +39,18 @@ LAST_FILE="$STATE_DIR/last_model"
 [ -f "$HOME/termux-home/.ai-env.conf" ] && \
     # shellcheck disable=SC1090
     . "$HOME/termux-home/.ai-env.conf"
-OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
-OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
-# llama.cpp server (second engine, Phase 1 of the Ollama migration). Same
-# port the Termux side's 'code' menu 9 uses; BMOE later gets its own entry.
+# llama.cpp server: THE engine (Ollama retired, Phase 3). Same port the
+# Termux side's 'code' menu 5 uses.
 LLAMA_URL="${LLAMA_URL:-http://127.0.0.1:8080}"
 LLAMA_CONTEXT_LENGTH="${LLAMA_CONTEXT_LENGTH:-8192}"
 ADB_AI_AUTO_CLEAN="${ADB_AI_AUTO_CLEAN:-ask}"
 ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/projects}"
 
-# Every Ollama call from this side goes through curl; a proot rootfs without
-# it looks exactly like "Ollama unreachable". Say so once, up front.
+# Every API call from this side goes through curl; a proot rootfs without it
+# looks exactly like "server unreachable". Say so once, up front.
 command -v curl >/dev/null 2>&1 || \
-    err "curl is not installed in Ubuntu - Ollama calls will fail. Run 'update-ai' (Termux side) to install it."
+    err "curl is not installed in Ubuntu - llama.cpp calls will fail. Run 'update-ai' (Termux side) to install it."
 
 usage() {
     cat <<EOF
@@ -85,21 +83,9 @@ log()  { echo "$*"; }
 err()  { echo "ERROR: $*" >&2; }
 die()  { err "$*"; exit 1; }
 
-# Ollama API. Every call: timeout with hard kill + stdin /dev/null (device
-# lesson from adb-ai: nothing may hold the caller's pipe or block forever).
-api() { # path [post-data]
-    local path="$1" data="${2:-}"
-    if [ -n "$data" ]; then
-        timeout -k 2 10 curl -s "$OLLAMA_URL$path" -d "$data" </dev/null 2>/dev/null || true
-    else
-        timeout -k 2 10 curl -s "$OLLAMA_URL$path" </dev/null 2>/dev/null || true
-    fi
-}
-
-api_ok() { [ -n "$(api /api/version)" ]; }
-
-# llama.cpp API (OpenAI-compatible). Same discipline as the Ollama api():
-# timeout + hard kill + stdin /dev/null, nothing may hold our pipe.
+# llama.cpp API (OpenAI-compatible). Every call: timeout with hard kill +
+# stdin /dev/null (device lesson from adb-ai: nothing may hold the caller's
+# pipe or block forever).
 lapi() { # path
     timeout -k 2 10 curl -s "$LLAMA_URL$1" </dev/null 2>/dev/null || true
 }
@@ -127,97 +113,10 @@ free_ram_gb() {
     awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
 }
 
-# One-line model descriptor from /api/show: parameter count + quantization +
-# disk size. Plain grep parsing (no jq — never installed by these scripts).
-model_meta_api() { # name sizeGB -> sets META
-    local show params quant
-    show=$(api /api/show "{\"model\":\"$1\"}")
-    params=$(printf '%s' "$show" | grep -oE '"parameter_size": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
-    quant=$(printf '%s' "$show" | grep -oE '"quantization_level": *"[^"]*"' | head -1 | sed 's/.*: *"//; s/"//')
-    META=""
-    [ -n "$params" ] && META="$params"
-    [ -n "$quant" ] && META="$META $quant"
-    # Missing trailing return 0 cost us a set -e death when the size arg was
-    # empty (last && -chain failing fails the function).
-    if [ -n "$2" ] && [ "$2" != "0.0" ]; then META="$META - ${2}GB disk"; fi
-    return 0
-}
-
-# Model table from /api/tags: parallel-greps name+size (same order), sizes to GB.
-# Temp file, not process substitution: /dev/fd is unreliable in proot (device
-# lesson — same class as the pipe-holding bugs in adb-ai).
-load_models_api() {
-    local tags t
-    tags=$(api /api/tags)
-    if [ -z "$tags" ]; then
-        MODELS=(); DISKS=(); return 1
-    fi
-    t=$(mktemp)
-    printf '%s' "$tags" | grep -oE '"name": *"[^"]*"' | sed 's/.*"name": *"//; s/"$//' > "$t"
-    mapfile -t MODELS < "$t"
-    printf '%s' "$tags" | grep -oE '"size": *[0-9]+' | grep -oE '[0-9]+' | awk '{printf "%.1f\n", $1/1e9}' > "$t"
-    mapfile -t DISKS < "$t"
-    rm -f "$t"
-}
-
 # =============================================================================
-# Model + project pickers (moved from `code`; state now lives in Ubuntu)
+# Project picker (model pickers live in the launchers — llama.cpp has no
+# per-model metadata endpoint, and the id already says which file it serves)
 # =============================================================================
-
-select_model() {
-    # Optional "cloud" arg appends an OpenCode-cloud entry AFTER local models,
-    # so the Enter-default stays the first local model (same UX as before).
-    local with_cloud="${1:-}"
-    local last mark
-    last="$(cat "$LAST_FILE" 2>/dev/null || true)"
-    load_models_api || true
-    # rc 0 = MODEL set, rc 1 = no models, rc 130 = cancelled via the 0 entry.
-    if [ ${#MODELS[@]} -eq 0 ] && [ -z "$with_cloud" ]; then
-        # Distinguish the two ways this list comes back empty: genuinely no
-        # models vs Ollama unreachable (or curl missing in Ubuntu - same
-        # symptom). Sending the user to the GGUF import for a network fault
-        # sends them in circles.
-        if [ -n "$(api /api/version)" ]; then
-            err "No models. Install/import one first ('code' > Import GGUF on the Termux side)"
-        else
-            err "Ollama unreachable at $OLLAMA_URL - is it running on the Termux side? ('code' > 5) Restart Ollama."
-            err "If it IS running, curl may be missing in Ubuntu: run 'update-ai' to install it."
-        fi
-        return 1
-    fi
-    local fr
-    fr=$(free_ram_gb)
-    [ -n "$fr" ] && log "Free RAM: ${fr}GB (model + its context KV cache must fit)"
-    log "Installed models:"
-    local i
-    for i in "${!MODELS[@]}"; do
-        mark=""
-        [ "${MODELS[$i]}" = "$last" ] && mark=" ⭐"
-        model_meta_api "${MODELS[$i]}" "${DISKS[$i]:-}"
-        printf "%2d) %-38s %s%s\n" $((i+1)) "${MODELS[$i]}" "$META" "$mark"
-    done
-    local n=${#MODELS[@]}
-    if [ -n "$with_cloud" ]; then
-        log "    -- cloud --"
-        [ "$last" = "__CLOUD__" ] && mark=" ⭐" || mark=""
-        printf "%2d) ☁ OpenCode cloud (its default model)%s\n" $((n+1)) "$mark"
-    fi
-    echo " 0) Cancel"
-    local c
-    read -rp "Choose model [1]: " c
-    c=${c:-1}
-    case "$c" in ''|*[!0-9]*) c=1 ;; esac
-    [ "$c" -eq 0 ] && return 130
-    [ "$c" -lt 1 ] && c=1
-    if [ -z "$with_cloud" ] && [ "$c" -gt "$n" ]; then c=1; fi
-    if [ -n "$with_cloud" ] && [ "$c" -gt "$n" ]; then
-        MODEL="__CLOUD__"
-    else
-        MODEL="${MODELS[$((c-1))]}"
-    fi
-    mkdir -p "$STATE_DIR"
-    echo "$MODEL" > "$LAST_FILE"
-}
 
 select_project() {
     log "Projects:"
@@ -285,51 +184,40 @@ find_node() {
 
 launch_aider() {
     maybe_quick_clean
-    # Engine sub-choice when the llama.cpp server is reachable: Ollama default,
-    # llama.cpp as option 2. Same picker UX, different API endpoints.
-    local engine="ollama"
-    if lapi_ok && [ -n "$(lapi /v1/models | grep -oE '"id"' | head -1)" ]; then
-        echo "Inference engine:"
-        echo "1) Ollama (ollama_chat/...)"
-        echo "2) llama.cpp server (openai/..., port ${LLAMA_URL##*:})"
-        local e
-        read -rp "Engine [1]: " e
-        case "$e" in 2) engine="llama" ;; esac
-    fi
-    if [ "$engine" = "llama" ]; then
-        load_models_llama || { err "llama.cpp server is up but lists no models."; return 1; }
-        # Picker shaped like select_model, but over LMODELS (no meta API on
-        # llama-server; the id already says which file is loaded).
-        local li lc
-        log "llama.cpp models:"
-        for li in "${!LMODELS[@]}"; do
-            printf "%2d) %-38s\n" $((li+1)) "${LMODELS[$li]}"
-        done
-        echo " 0) Cancel"
-        read -rp "Choose model [1]: " lc
-        lc=${lc:-1}
-        case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
-        [ "$lc" -eq 0 ] && return 130
-        [ "$lc" -lt 1 ] && lc=1
-        [ "$lc" -gt ${#LMODELS[@]} ] && lc=${#LMODELS[@]}
-        MODEL="${LMODELS[$((lc-1))]}"
-        mkdir -p "$STATE_DIR"
-        echo "$MODEL" > "$LAST_FILE"
-        select_project || return 0
-        cd "$PROJECTS_DIR/$PROJECT_NAME"
-        # OPENAI_API_KEY must be set even for a local server (litellm refuses
-        # to authenticate without one, device-verified); OPENAI_API_BASE is
-        # belt-and-braces beside --openai-api-base for aider's litellm layer.
-        OPENAI_API_KEY="${OPENAI_API_KEY:-dummy-local-llama}"
-        export OPENAI_API_KEY OPENAI_API_BASE="$LLAMA_URL/v1"
-        exec aider --model "openai/$MODEL" --openai-api-base "$LLAMA_URL/v1" \
-            --openai-api-key "$OPENAI_API_KEY" \
-            --timeout 300
-    fi
-    select_model || return 0
+    # llama.cpp is the primary engine (Ollama retired, Phase 3). No engine
+    # sub-choice: the server must be up on the Termux side (menu 5 there).
+    lapi_ok || die "llama.cpp server not reachable at $LLAMA_URL - start it from the Termux side ('code' > 5)."
+    load_models_llama || { err "llama.cpp server is up but lists no models."; return 1; }
+    # Picker shaped like select_model, but over LMODELS (no meta API on
+    # llama-server; the id already says which file is loaded).
+    local li lc last mark
+    last="$(cat "$LAST_FILE" 2>/dev/null || true)"
+    log "llama.cpp models:"
+    for li in "${!LMODELS[@]}"; do
+        mark=""
+        [ "${LMODELS[$li]}" = "$last" ] && mark=" ⭐"
+        printf "%2d) %-45s%s\n" $((li+1)) "${LMODELS[$li]}" "$mark"
+    done
+    echo " 0) Cancel"
+    read -rp "Choose model [1]: " lc
+    lc=${lc:-1}
+    case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
+    [ "$lc" -eq 0 ] && return 130
+    [ "$lc" -lt 1 ] && lc=1
+    [ "$lc" -gt ${#LMODELS[@]} ] && lc=${#LMODELS[@]}
+    MODEL="${LMODELS[$((lc-1))]}"
+    mkdir -p "$STATE_DIR"
+    echo "$MODEL" > "$LAST_FILE"
     select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
-    exec aider --model "ollama_chat/$MODEL"
+    # OPENAI_API_KEY must be set even for a local server (litellm refuses
+    # to authenticate without one, device-verified); OPENAI_API_BASE is
+    # belt-and-braces beside --openai-api-base for aider's litellm layer.
+    OPENAI_API_KEY="${OPENAI_API_KEY:-dummy-local-llama}"
+    export OPENAI_API_KEY OPENAI_API_BASE="$LLAMA_URL/v1"
+    exec aider --model "openai/$MODEL" --openai-api-base "$LLAMA_URL/v1" \
+        --openai-api-key "$OPENAI_API_KEY" \
+        --timeout 300
 }
 
 launch_opencode() {
@@ -338,45 +226,35 @@ launch_opencode() {
     [ -z "$oc" ] && [ -x "$HOME/.opencode/bin/opencode" ] && oc="$HOME/.opencode/bin/opencode"
     [ -z "$oc" ] && die "OpenCode is not installed - run 'update-ai'"
     maybe_quick_clean
-    # Engine sub-choice when the llama.cpp server is reachable.
-    local engine="ollama"
+    # llama.cpp provider config; OpenCode's cloud entry stays as the escape
+    # hatch when the phone is too slow for fat agent prompts.
+    regen_oc_if_missing llama || die "llama.cpp server lists no models"
+    load_models_llama || return 1
+    local li lc
+    log "llama.cpp models:"
+    for li in "${!LMODELS[@]}"; do
+        printf "%2d) %-45s\n" $((li+1)) "${LMODELS[$li]}"
+    done
     if lapi_ok; then
-        echo "Inference engine:"
-        echo "1) Ollama (ollama/...)"
-        echo "2) llama.cpp server (openai-compatible provider, port ${LLAMA_URL##*:})"
-        local e
-        read -rp "Engine [1]: " e
-        case "$e" in 2) engine="llama" ;; esac
+        log "$(printf '%2d) ☁ OpenCode cloud (its default model)' $((${#LMODELS[@]}+1)))"
     fi
-    if [ "$engine" = "llama" ]; then
-        regen_oc_if_missing llama || die "llama.cpp server lists no models"
-        load_models_llama || return 1
-        local li lc
-        log "llama.cpp models:"
-        for li in "${!LMODELS[@]}"; do
-            printf "%2d) %-38s\n" $((li+1)) "${LMODELS[$li]}"
-        done
-        echo " 0) Cancel"
-        read -rp "Choose model [1]: " lc
-        lc=${lc:-1}
-        case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
-        [ "$lc" -eq 0 ] && return 130
-        [ "$lc" -lt 1 ] && lc=1
-        [ "$lc" -gt ${#LMODELS[@]} ] && lc=${#LMODELS[@]}
+    echo " 0) Cancel"
+    read -rp "Choose model [1]: " lc
+    lc=${lc:-1}
+    case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
+    [ "$lc" -eq 0 ] && return 130
+    [ "$lc" -lt 1 ] && lc=1
+    if [ "$lc" -gt ${#LMODELS[@]} ]; then
+        MODEL="__CLOUD__"
+    else
         MODEL="${LMODELS[$((lc-1))]}"
-        select_project || return 0
-        cd "$PROJECTS_DIR/$PROJECT_NAME"
-        exec "$oc" --model "llamacpp/${LMODELS[$((lc-1))]}"
-    fi
-    select_model cloud || return 0
-    local model_args=""
-    if [ "$MODEL" != "__CLOUD__" ]; then
-        regen_oc_if_missing || die "No Ollama models - OpenCode will need its default (use the cloud entry)"
-        model_args="--model ollama/$MODEL"
     fi
     select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
-    exec "$oc" $model_args
+    if [ "$MODEL" = "__CLOUD__" ]; then
+        exec "$oc"
+    fi
+    exec "$oc" --model "llamacpp/$MODEL"
 }
 
 launch_freebuff() {
@@ -404,45 +282,29 @@ launch_freebuff() {
 # ARG: "llama" generates a second provider block named "llamacpp" pointing at
 # the llama.cpp server instead — same schema, same limit rules.
 generate_oc_config() {
-    local which="${1:-ollama}" i comma cap
-    cap=$(( OLLAMA_CONTEXT_LENGTH > 4096 ? 4096 : OLLAMA_CONTEXT_LENGTH ))
-    if [ "$which" = "llama" ]; then
-        load_models_llama || return 1
-        [ ${#LMODELS[@]} -eq 0 ] && return 1
-        mkdir -p "$HOME/.config/opencode"
-        local dest="$HOME/.config/opencode/opencode.json"
-        {
-            printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "llamacpp": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "llama.cpp",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$LLAMA_URL"
-            for i in "${!LMODELS[@]}"; do
-                comma=","
-                [ "$i" -eq $((${#LMODELS[@]}-1)) ] && comma=""
-                printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' \
-                    "${LMODELS[$i]}" "${LMODELS[$i]}" "$LLAMA_CONTEXT_LENGTH" "$cap" "$comma"
-            done
-            printf '      }\n    }\n  }\n}\n'
-        } > "$dest" 2>/dev/null || return 1
-        log "Generated OpenCode llama.cpp provider config (~/.config/opencode/opencode.json)"
-        return 0
-    fi
-    load_models_api || return 1
-    [ ${#MODELS[@]} -eq 0 ] && return 1
+    # llama.cpp is the only local provider (Ollama retired, Phase 3). Schema
+    # requires limit.output alongside limit.context; output capped at 4096.
+    local i comma cap
+    cap=$(( LLAMA_CONTEXT_LENGTH > 4096 ? 4096 : LLAMA_CONTEXT_LENGTH ))
+    load_models_llama || return 1
+    [ ${#LMODELS[@]} -eq 0 ] && return 1
     mkdir -p "$HOME/.config/opencode"
     local dest="$HOME/.config/opencode/opencode.json"
     {
-        printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$OLLAMA_URL"
-        for i in "${!MODELS[@]}"; do
+        printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "llamacpp": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "llama.cpp",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$LLAMA_URL"
+        for i in "${!LMODELS[@]}"; do
             comma=","
-            [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
+            [ "$i" -eq $((${#LMODELS[@]}-1)) ] && comma=""
             printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' \
-                "${MODELS[$i]}" "${MODELS[$i]}" "$OLLAMA_CONTEXT_LENGTH" "$cap" "$comma"
+                "${LMODELS[$i]}" "${LMODELS[$i]}" "$LLAMA_CONTEXT_LENGTH" "$cap" "$comma"
         done
         printf '      }\n    }\n  }\n}\n'
     } > "$dest" 2>/dev/null || return 1
-    log "Generated OpenCode Ollama provider config (~/.config/opencode/opencode.json)"
+    log "Generated OpenCode llama.cpp provider config (~/.config/opencode/opencode.json)"
     return 0
 }
 
-# ARG passed through to generate_oc_config: empty = ollama, "llama" = llamacpp.
+# ARG passed through to generate_oc_config: "llama" (default) = llamacpp.
 regen_oc_if_missing() {
     [ -f "$HOME/.config/opencode/opencode.json" ] && return 0
     generate_oc_config "$1"
@@ -455,7 +317,7 @@ cmd_regen_oc() {
         read -rp "Overwrite existing ~/.config/opencode/opencode.json? [y/N] " a
         case "$a" in [Yy]*) ;; *) log "Aborted."; return 1 ;; esac
     fi
-    generate_oc_config || die "No models to register - import one first ('code' > Import GGUF)"
+    generate_oc_config llama || die "No models to register - import one first ('code' > 2) Import GGUF)"
 }
 
 # =============================================================================
@@ -463,57 +325,25 @@ cmd_regen_oc() {
 # =============================================================================
 
 cmd_status() {
-    # awk everywhere, never grep-pipelines: with Ollama unreachable the input
-    # is empty and a failing grep kills the whole status under set -e +
-    # pipefail (device-observed). awk exits 0 on empty input.
-    # Mirrors code's status_banner (kept in sync): same layout, same parsing.
-    local fr models loaded low
+    # Mirrors code's status_banner (kept in sync): same layout.
+    local fr lm low
     fr=$(free_ram_gb)
-    # gsub returns the replacement count: counts every "name": occurrence,
-    # not just matching lines (Ollama's /api/tags is ONE compact line, so a
-    # line-count showed "Models : 1" with any number of models).
-    models=$(api /api/tags | awk '{n+=gsub(/"name":/, "&")} END{print n+0}')
-    # Strip the "name":*" prefix by substitution, not fixed substr offsets:
-    # compact JSON ("name":"x") vs spaced ("name": "x") differ by one char,
-    # and the old substr(+9) chopped the first letter of the model name.
-    loaded=$(api /api/ps | awk '{if (match($0, /"name": *"[^"]*"/)) {v=substr($0, RSTART, RLENGTH); sub(/^"name": *"/, "", v); sub(/"$/, "", v)} if (match($0, /"size": *[0-9]+/)) {s=substr($0, RSTART, RLENGTH); sub(/^"size": */, "", s)}} END{if (v != "") {if (s+0 > 0) printf "%s (%.1fGB)", v, s/1e9; else print v}}')
     echo "====================================="
     echo " Ubuntu Dev Environment"
     echo "====================================="
-    local up=""
-    if [ -n "$(api /api/version)" ]; then
-        up=1
-        echo "Ollama : Running"
-    else
-        echo "Ollama : Unreachable (is it running on the Termux side? try 'code' > Restart Ollama)"
-    fi
-    # Second engine status: up + model id (which is the file/alias name).
+    # llama.cpp is the primary engine (Ollama retired, Phase 3).
+    local lm=""
     if lapi_ok; then
         echo "llama.cpp : Running"
-        local lm
         lm=$(lapi /v1/models | grep -oE '"id": *"[^"]*"' | head -1 | sed 's/.*"id": *"//; s/"//')
         [ -n "$lm" ] && echo "            loaded: $lm"
     else
-        echo "llama.cpp : Not running ('code' > 9 starts it)"
+        echo "llama.cpp : Not running (start it on the Termux side: 'code' > 5)"
     fi
-    #Down -> "?": an empty /api/tags means unknown, not zero - don't claim the
-    #models vanished just because the API is unreachable.
-    if [ -z "$up" ]; then
-        echo "Models  : ?"
-        echo "Loaded  : ?"
-    elif [ "$models" = "0" ]; then
-        echo "Models  : 0  (add one on the Termux side: run 'code' > 2) Import GGUF)"
-        #"Loaded" = resident in RAM, not installed - after a restart it is
-        #none until the first request; say so, or it reads like they vanished.
-        echo "Loaded  : ${loaded:-none (loads on first request)}"
-    else
-        echo "Models  : $models"
-        echo "Loaded  : ${loaded:-none (loads on first request)}"
-    fi
-    echo "Ctx     : $OLLAMA_CONTEXT_LENGTH"
+    echo "Ctx     : $LLAMA_CONTEXT_LENGTH"
     if [ -n "$fr" ]; then
         low=""
-        if awk -v f="$fr" -v t="$ADB_AI_LOW_RAM_GB" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 5)"; fi
+        if awk -v f="$fr" -v t="$ADB_AI_LOW_RAM_GB" 'BEGIN{exit !(f+0<t+0)}'; then low="  ** LOW (quick clean: menu 5, adb-ai)"; fi
         echo "FreeRAM : ${fr}GB${low}"
     else
         echo "FreeRAM : ?GB"
