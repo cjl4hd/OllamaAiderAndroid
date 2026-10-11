@@ -112,12 +112,12 @@ packages.
 | `UBUNTU_DISTRO_NAME` | `ubuntu` | proot-distro container name |
 | `PROJECT_NAME` | `OllamaAiderAndroid` | Git project directory name |
 | `PROJECT_DIR` | *(auto-detected)* | Absolute path override if the clone lives elsewhere |
-| `GGUF_DIR` | `/storage/emulated/0/Models` | Where `.gguf` model files are imported from |
+| `GGUF_DIR` | `/storage/emulated/0/models` | Where `.gguf` model files are picked for import (menu 2) |
 | `OPENCODE` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `FREEBUFF` | `ask` | `ask` (prompt if missing) or `no` (never install) |
 | `LLAMA_SERVER_PORT` | `8080` | llama.cpp server port ('code' menus 5/6). Ubuntu's aider/OpenCode reach it over loopback |
-| `LLAMA_MODEL` | `auto` | GGUF path for llama-server; `auto` = newest `.gguf` in `LLAMA_MODELS_DIR`, else biggest legacy Ollama blob |
-| `LLAMA_MODELS_DIR` | `~/.llama/models` | Import dir for `.gguf` files (menu 2 copies them here) |
+| `LLAMA_MODEL` | `auto` | GGUF path for llama-server; `auto` = newest `.gguf` in the models dir (see `LLAMA_MODELS_DIR`), else biggest legacy Ollama blob |
+| `LLAMA_MODELS_DIR` | `/storage/emulated/0/models` | Primary model dir (`~/android-home/models` in Termux); menu 2 writes new imports here, llama-server picks from here first |
 | `LLAMA_CONTEXT_LENGTH` | `8192` | llama-server context window |
 | `LLAMA_THREADS` | `4` | llama-server compute threads (measured on-device) |
 | `BMOE_PROJECT_DIR` | `/root/projects/BigMoeOnEdge` | BigMoeOnEdge clone path inside Ubuntu that `update-ai` pulls + builds + installs (`bmoe-cli`, streamed MoE engine) |

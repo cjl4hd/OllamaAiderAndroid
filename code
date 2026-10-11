@@ -25,7 +25,8 @@ fi
 source "$CONFIG_FILE"
 
 UBUNTU_DISTRO_NAME="${UBUNTU_DISTRO_NAME:-ubuntu}"
-GGUF_DIR="${GGUF_DIR:-$HOME/storage/shared/Models}"
+#Model picks for import browse whichever dir the user keeps GGUFs in -
+#GGUF_DIR (set further down to android-home/models, the shared-storage dir).
 #Low-RAM threshold for the banner's ** LOW marker (same key adb-ai's
 #auto-clean and code-ubuntu use - one config file repo-wide).
 ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
@@ -33,16 +34,20 @@ ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 [ -d "$HOME/storage" ] || echo "Warning: shared storage not set up - GGUF import will fail (run 'update-ai')"
 
 #Pin the model store explicitly. A pkg upgrade of ollama can change the
-#Model blob store (kept at the old Ollama path so nothing re-downloads):
-#llama-server loads individual .gguf files from here; new imports land in
-#LLAMA_MODELS_DIR (default ~/.llama/models).
+#Model sources, in priority order for llama-server:
+#1. LLAMA_MODELS_DIR - shared-storage models dir (user-managed; the committed
+#   ~/android-home symlink points at /storage/emulated/0, so
+#   android-home/models is the default).
+#2. Legacy Ollama blob store - 19GB of existing models remain loadable;
+#   deleted only via clear-ai-cache with confirmation.
+GGUF_DIR="${GGUF_DIR:-$HOME/android-home/models}"
 OLLAMA_MODELS="${OLLAMA_MODELS:-$HOME/.ollama/models}"
-LLAMA_MODELS_DIR="${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
+LLAMA_MODELS_DIR="${LLAMA_MODELS_DIR:-$HOME/android-home/models}"
 
 # ============================================================================
 # llama.cpp server (PRIMARY engine since the Phase 3 Ollama retirement).
-# Serves the GGUF blobs (kept under the old Ollama store path so nothing
-# re-downloads) over an OpenAI-compatible API. Menus 5/6 manage it; aider and
+# Serves GGUF files LLAMA_MODELS_DIR plus the legacy Ollama blob store over
+# an OpenAI-compatible API. Menus 5/6 manage it; aider and
 # OpenCode in Ubuntu point at it. Override via LLAMA_SERVER_PORT / LLAMA_MODEL
 # in ~/.ai-env.conf.
 # ============================================================================
@@ -51,7 +56,6 @@ LLAMA_MODEL="${LLAMA_MODEL:-auto}"
 LLAMA_CONTEXT_LENGTH="${LLAMA_CONTEXT_LENGTH:-8192}"
 #Threads for llama-server decode. 4 measured on the S26 (aarch64, CPU only).
 LLAMA_THREADS="${LLAMA_THREADS:-4}"
-LLAMA_MODELS_DIR="${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
 
 lapi() { # path
     timeout -k 2 10 curl -s "http://127.0.0.1:${LLAMA_SERVER_PORT:-8080}$1" </dev/null 2>/dev/null || true
@@ -70,7 +74,7 @@ command -v llama-server 2>/dev/null
 #land in LLAMA_MODELS_DIR).
 llama_pick_model(){
 local pick=""
-pick=$(ls -t "${LLAMA_MODELS_DIR:-$HOME/.llama/models}"/*.gguf 2>/dev/null | head -1)
+pick=$(ls -t "${LLAMA_MODELS_DIR:-$HOME/android-home/models}"/*.gguf 2>/dev/null | head -1)
 if [ -z "$pick" ]; then
     pick=$(ls -S "${OLLAMA_MODELS:-$HOME/.ollama/models}"/blobs/sha256-* 2>/dev/null | head -1)
 fi
@@ -88,7 +92,7 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     return 0
 fi
 if [ "$LLAMA_MODEL" = "auto" ]; then
-    MODEL_PATH=$(llama_pick_model) || { echo "No .gguf found in ${LLAMA_MODELS_DIR:-$HOME/.llama/models} or the legacy Ollama blobs - import one via menu 2 first."; return 1; }
+    MODEL_PATH=$(llama_pick_model) || { echo "No .gguf found in ${LLAMA_MODELS_DIR:-$HOME/android-home/models} or the legacy Ollama blobs - import one via menu 2 first."; return 1; }
 else
     MODEL_PATH="$LLAMA_MODEL"
     [ -f "$MODEL_PATH" ] || { echo "LLAMA_MODEL=$MODEL_PATH (from ~/.ai-env.conf) does not exist."; return 1; }
@@ -149,7 +153,7 @@ awk '/MemAvailable/{printf "%.1f", $2/1048576; exit}' /proc/meminfo 2>/dev/null
 #is unreliable in proot); sizes get one decimal each - a missing newline here
 #once merged two models' sizes into one bogus value.
 load_models(){
-local dir="${LLAMA_MODELS_DIR:-$HOME/.llama/models}" t f sz
+local dir="${LLAMA_MODELS_DIR:-$HOME/android-home/models}" t f sz
 #NOTE: find with -o needs explicit grouping; the double -maxdepth form below
 #would silently misparse. List the import dir and the legacy blob store
 #separately instead (blobs have no .gguf suffix, so they are matched as-is).
@@ -268,8 +272,8 @@ select f in "${G[@]}"; do [ -n "$f" ] && break; done
 # No registry anymore (Ollama retired): importing = moving the file into the
 # models dir llama-server loads from. cp first so the source stays until the
 # copy landed (phone flash interrupting a mv is how files used to vanish).
-mkdir -p "${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
-cp -v "$f" "${LLAMA_MODELS_DIR:-$HOME/.llama/models}/" \
+mkdir -p "${LLAMA_MODELS_DIR:-$HOME/android-home/models}"
+cp -v "$f" "${LLAMA_MODELS_DIR:-$HOME/android-home/models}/" \
     && echo "Imported: available to llama-server on next start (menu 5)."
 }
 
