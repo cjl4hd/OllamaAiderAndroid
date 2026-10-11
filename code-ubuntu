@@ -41,6 +41,10 @@ LAST_FILE="$STATE_DIR/last_model"
     . "$HOME/termux-home/.ai-env.conf"
 OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
 OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
+# llama.cpp server (second engine, Phase 1 of the Ollama migration). Same
+# port the Termux side's 'code' menu 9 uses; BMOE later gets its own entry.
+LLAMA_URL="${LLAMA_URL:-http://127.0.0.1:8080}"
+LLAMA_CONTEXT_LENGTH="${LLAMA_CONTEXT_LENGTH:-8192}"
 ADB_AI_AUTO_CLEAN="${ADB_AI_AUTO_CLEAN:-ask}"
 ADB_AI_LOW_RAM_GB="${ADB_AI_LOW_RAM_GB:-4}"
 PROJECTS_DIR="${PROJECTS_DIR:-$HOME/projects}"
@@ -93,6 +97,30 @@ api() { # path [post-data]
 }
 
 api_ok() { [ -n "$(api /api/version)" ]; }
+
+# llama.cpp API (OpenAI-compatible). Same discipline as the Ollama api():
+# timeout + hard kill + stdin /dev/null, nothing may hold our pipe.
+lapi() { # path
+    timeout -k 2 10 curl -s "$LLAMA_URL$1" </dev/null 2>/dev/null || true
+}
+lapi_ok() { [ -n "$(lapi /health)" ]; }
+
+# Model table from llama-server's /v1/models. NOTE (device-verified):
+# llama-server currently serves the model's FILE NAME (the blob hash, or the
+# --alias value) as its id, not a friendly tag like Ollama does. The Termux
+# launcher passes --alias per model; from here we just surface what it says.
+load_models_llama() {
+    local j t
+    j=$(lapi /v1/models)
+    if [ -z "$j" ]; then
+        LMODELS=(); return 1
+    fi
+    t=$(mktemp)
+    printf '%s' "$j" | grep -oE '"id": *"[^"]*"' | sed 's/.*"id": *"//; s/"$//' > "$t"
+    mapfile -t LMODELS < "$t"
+    rm -f "$t"
+    [ ${#LMODELS[@]} -gt 0 ]
+}
 
 # Free RAM in GB from /proc/meminfo (Android kernels expose MemAvailable).
 free_ram_gb() {
@@ -257,6 +285,40 @@ find_node() {
 
 launch_aider() {
     maybe_quick_clean
+    # Engine sub-choice when the llama.cpp server is reachable: Ollama default,
+    # llama.cpp as option 2. Same picker UX, different API endpoints.
+    local engine="ollama"
+    if lapi_ok && [ -n "$(lapi /v1/models | grep -oE '"id"' | head -1)" ]; then
+        echo "Inference engine:"
+        echo "1) Ollama (ollama_chat/...)"
+        echo "2) llama.cpp server (openai/..., port ${LLAMA_URL##*:})"
+        local e
+        read -rp "Engine [1]: " e
+        case "$e" in 2) engine="llama" ;; esac
+    fi
+    if [ "$engine" = "llama" ]; then
+        load_models_llama || { err "llama.cpp server is up but lists no models."; return 1; }
+        # Picker shaped like select_model, but over LMODELS (no meta API on
+        # llama-server; the id already says which file is loaded).
+        local li lc
+        log "llama.cpp models:"
+        for li in "${!LMODELS[@]}"; do
+            printf "%2d) %-38s\n" $((li+1)) "${LMODELS[$li]}"
+        done
+        echo " 0) Cancel"
+        read -rp "Choose model [1]: " lc
+        lc=${lc:-1}
+        case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
+        [ "$lc" -eq 0 ] && return 130
+        [ "$lc" -lt 1 ] && lc=1
+        [ "$lc" -gt ${#LMODELS[@]} ] && lc=${#LMODELS[@]}
+        MODEL="${LMODELS[$((lc-1))]}"
+        mkdir -p "$STATE_DIR"
+        echo "$MODEL" > "$LAST_FILE"
+        select_project || return 0
+        cd "$PROJECTS_DIR/$PROJECT_NAME"
+        exec aider --model "openai/$MODEL" --openai-api-base "$LLAMA_URL/v1"
+    fi
     select_model || return 0
     select_project || return 0
     cd "$PROJECTS_DIR/$PROJECT_NAME"
@@ -269,6 +331,36 @@ launch_opencode() {
     [ -z "$oc" ] && [ -x "$HOME/.opencode/bin/opencode" ] && oc="$HOME/.opencode/bin/opencode"
     [ -z "$oc" ] && die "OpenCode is not installed - run 'update-ai'"
     maybe_quick_clean
+    # Engine sub-choice when the llama.cpp server is reachable.
+    local engine="ollama"
+    if lapi_ok; then
+        echo "Inference engine:"
+        echo "1) Ollama (ollama/...)"
+        echo "2) llama.cpp server (openai-compatible provider, port ${LLAMA_URL##*:})"
+        local e
+        read -rp "Engine [1]: " e
+        case "$e" in 2) engine="llama" ;; esac
+    fi
+    if [ "$engine" = "llama" ]; then
+        regen_oc_if_missing llama || die "llama.cpp server lists no models"
+        load_models_llama || return 1
+        local li lc
+        log "llama.cpp models:"
+        for li in "${!LMODELS[@]}"; do
+            printf "%2d) %-38s\n" $((li+1)) "${LMODELS[$li]}"
+        done
+        echo " 0) Cancel"
+        read -rp "Choose model [1]: " lc
+        lc=${lc:-1}
+        case "$lc" in ''|*[!0-9]*) lc=1 ;; esac
+        [ "$lc" -eq 0 ] && return 130
+        [ "$lc" -lt 1 ] && lc=1
+        [ "$lc" -gt ${#LMODELS[@]} ] && lc=${#LMODELS[@]}
+        MODEL="${LMODELS[$((lc-1))]}"
+        select_project || return 0
+        cd "$PROJECTS_DIR/$PROJECT_NAME"
+        exec "$oc" --model "llamacpp/${LMODELS[$((lc-1))]}"
+    fi
     select_model cloud || return 0
     local model_args=""
     if [ "$MODEL" != "__CLOUD__" ]; then
@@ -302,15 +394,35 @@ launch_freebuff() {
 # Write ~/.config/opencode/opencode.json from the installed Ollama models
 # (OpenAI-compatible provider). Schema requires limit.output alongside
 # limit.context; output is capped at 4096 (or ctx, if smaller).
+# ARG: "llama" generates a second provider block named "llamacpp" pointing at
+# the llama.cpp server instead — same schema, same limit rules.
 generate_oc_config() {
+    local which="${1:-ollama}" i comma cap
+    cap=$(( OLLAMA_CONTEXT_LENGTH > 4096 ? 4096 : OLLAMA_CONTEXT_LENGTH ))
+    if [ "$which" = "llama" ]; then
+        load_models_llama || return 1
+        [ ${#LMODELS[@]} -eq 0 ] && return 1
+        mkdir -p "$HOME/.config/opencode"
+        local dest="$HOME/.config/opencode/opencode.json"
+        {
+            printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "llamacpp": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "llama.cpp",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$LLAMA_URL"
+            for i in "${!LMODELS[@]}"; do
+                comma=","
+                [ "$i" -eq $((${#LMODELS[@]}-1)) ] && comma=""
+                printf '        "%s": {"name": "%s", "limit": {"context": %s, "output": %s}}%s\n' \
+                    "${LMODELS[$i]}" "${LMODELS[$i]}" "$LLAMA_CONTEXT_LENGTH" "$cap" "$comma"
+            done
+            printf '      }\n    }\n  }\n}\n'
+        } > "$dest" 2>/dev/null || return 1
+        log "Generated OpenCode llama.cpp provider config (~/.config/opencode/opencode.json)"
+        return 0
+    fi
     load_models_api || return 1
     [ ${#MODELS[@]} -eq 0 ] && return 1
-    local cap=$(( OLLAMA_CONTEXT_LENGTH > 4096 ? 4096 : OLLAMA_CONTEXT_LENGTH ))
     mkdir -p "$HOME/.config/opencode"
     local dest="$HOME/.config/opencode/opencode.json"
     {
         printf '{\n  "$schema": "https://opencode.ai/config.json",\n  "provider": {\n    "ollama": {\n      "npm": "@ai-sdk/openai-compatible",\n      "name": "Ollama",\n      "options": {\n        "baseURL": "%s/v1"\n      },\n      "models": {\n' "$OLLAMA_URL"
-        local i comma
         for i in "${!MODELS[@]}"; do
             comma=","
             [ "$i" -eq $((${#MODELS[@]}-1)) ] && comma=""
@@ -323,9 +435,10 @@ generate_oc_config() {
     return 0
 }
 
+# ARG passed through to generate_oc_config: empty = ollama, "llama" = llamacpp.
 regen_oc_if_missing() {
     [ -f "$HOME/.config/opencode/opencode.json" ] && return 0
-    generate_oc_config
+    generate_oc_config "$1"
 }
 
 cmd_regen_oc() {
@@ -366,6 +479,15 @@ cmd_status() {
         echo "Ollama : Running"
     else
         echo "Ollama : Unreachable (is it running on the Termux side? try 'code' > Restart Ollama)"
+    fi
+    # Second engine status: up + model id (which is the file/alias name).
+    if lapi_ok; then
+        echo "llama.cpp : Running"
+        local lm
+        lm=$(lapi /v1/models | grep -oE '"id": *"[^"]*"' | head -1 | sed 's/.*"id": *"//; s/"//')
+        [ -n "$lm" ] && echo "            loaded: $lm"
+    else
+        echo "llama.cpp : Not running ('code' > 9 starts it)"
     fi
     #Down -> "?": an empty /api/tags means unknown, not zero - don't claim the
     #models vanished just because the API is unreachable.

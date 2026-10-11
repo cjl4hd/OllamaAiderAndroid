@@ -60,6 +60,24 @@ command -v llama-cli >/dev/null \
     && pass "llama-cli installed (bench.py)" \
     || fail "llama-cli missing (needed for bench.py)"
 
+# Second engine (llama.cpp server, Phase 1 of the Ollama migration).
+LLAMA_PORT="${LLAMA_SERVER_PORT:-8080}"
+command -v llama-server >/dev/null \
+    && pass "llama-server installed" \
+    || fail "llama-server missing (pkg install llama-cpp)"
+pgrep -x llama-server >/dev/null 2>&1 \
+    && pass "llama-server running" \
+    || echo "  (llama-server not running - 'code' > 9 starts it; optional)"
+curl -s -m 3 "http://127.0.0.1:$LLAMA_PORT/health" </dev/null >/dev/null 2>&1 \
+    && pass "llama.cpp API reachable (:$LLAMA_PORT)" \
+    || echo "  (llama.cpp API unreachable - only needs to be up for menu 9 flows)"
+
+# BigMoeOnEdge (Phase 2): optional second engine, built in the Ubuntu clone.
+BMOE_BIN=$(in_ubuntu_path bmoe-cli)
+[ -n "$BMOE_BIN" ] \
+    && pass "bmoe-cli installed" \
+    || echo "  (bmoe-cli not found in Ubuntu - optional; build via update-ai's BMoE section)"
+
 command -v llama-bench >/dev/null \
     && pass "llama-bench installed (bench_all.py)" \
     || fail "llama-bench missing (needed for bench_all.py)"

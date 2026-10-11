@@ -70,6 +70,100 @@ export OLLAMA_KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
 #Override via OLLAMA_LOAD_TIMEOUT in ~/.ai-env.conf.
 export OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-15m}"
 
+# ============================================================================
+# llama.cpp server (the second engine, Phase 1 of the Ollama migration).
+# Serves the SAME GGUF blobs Ollama imported over an OpenAI-compatible API.
+# Menu 10 launches it; aider/OpenCode in Ubuntu can then point at it.
+# Override via LLAMA_SERVER_PORT / LLAMA_MODEL in ~/.ai-env.conf.
+# ============================================================================
+LLAMA_SERVER_PORT="${LLAMA_SERVER_PORT:-8080}"
+LLAMA_MODEL="${LLAMA_MODEL:-auto}"
+#Context for llama-server. Ollama's ctx lives in OLLAMA_CONTEXT_LENGTH; keep
+#them independent so switching engines doesn't surprise-bump RAM.
+LLAMA_CONTEXT_LENGTH="${LLAMA_CONTEXT_LENGTH:-8192}"
+#Threads for llama-server decode. 4 measured on the S26 (aarch64, CPU only).
+LLAMA_THREADS="${LLAMA_THREADS:-4}"
+
+#Resolve the installed llama-server (Termux pkg 'llama-cpp').
+llama_bin(){
+for c in "/data/data/com.termux/files/usr/bin/llama-server" "/usr/bin/llama-server"; do
+    [ -x "$c" ] && { echo "$c"; return 0; }
+done
+command -v llama-server 2>/dev/null
+}
+
+#Pick a GGUF blob when LLAMA_MODEL=auto: biggest blob under the Ollama store
+#(strict manifest->blob mapping is overkill for a pick-one heuristic).
+llama_pick_model(){
+local store="${OLLAMA_MODELS:-$HOME/.ollama/models}"
+local blob=""
+if [ -d "$store/blobs" ]; then
+    blob=$(ls -S "$store"/blobs/sha256-* 2>/dev/null | head -1)
+fi
+[ -n "$blob" ] && { echo "$blob"; return 0; }
+return 1
+}
+
+start_llama_server(){
+local bin i MODEL_PATH
+bin=$(llama_bin) || { echo "llama-server not installed - run 'pkg install llama-cpp'"; return 1; }
+#Exact-name process check, not pgrep -f (device lesson: pgrep -f matches
+#probe command lines that contain the same words).
+if pgrep -x llama-server >/dev/null 2>&1; then
+    echo "llama-server already running (port $LLAMA_SERVER_PORT)"
+    return 0
+fi
+if [ "$LLAMA_MODEL" = "auto" ]; then
+    MODEL_PATH=$(llama_pick_model) || { echo "No GGUF blob under ${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs - import one via menu 2 first."; return 1; }
+else
+    MODEL_PATH="$LLAMA_MODEL"
+    [ -f "$MODEL_PATH" ] || { echo "LLAMA_MODEL=$MODEL_PATH (from ~/.ai-env.conf) does not exist."; return 1; }
+fi
+echo "Starting llama-server (port $LLAMA_SERVER_PORT, ctx $LLAMA_CONTEXT_LENGTH, threads $LLAMA_THREADS)..."
+: > "$HOME/.llama-server.log" 2>/dev/null || true
+#nohup + log file + health-check wait: the same shape as start_ollama.
+#(Do NOT background this inside a subshell/one-shot call - the child gets
+#cleaned up with the caller, device-verified.)
+#--alias replaces the sha256-blob-hash /v1/models id (llama-server serves the
+#file name as the model id, device-verified) with the blob's digest-free
+#prefix so pickers show a readable name.
+ALIAS=$(basename "$MODEL_PATH")
+ALIAS=${ALIAS#sha256-}; ALIAS=${ALIAS%%-*}
+ALIAS="llama-$ALIAS"
+ohgup_exit=0
+nohup "$bin" -m "$MODEL_PATH" --alias "$ALIAS" -c "$LLAMA_CONTEXT_LENGTH" --host 127.0.0.1 --port "$LLAMA_SERVER_PORT" -t "$LLAMA_THREADS" >> "$HOME/.llama-server.log" 2>&1 &
+for i in $(seq 1 30); do
+    curl -s -m 2 "http://127.0.0.1:$LLAMA_SERVER_PORT/health" </dev/null >/dev/null 2>&1 && { ohgup_exit=0; break; }
+    sleep 1
+    ohgup_exit=1
+done
+if [ "$ohgup_exit" -eq 0 ]; then
+    echo "llama-server up at http://127.0.0.1:$LLAMA_SERVER_PORT (log: $HOME/.llama-server.log)"
+    return 0
+fi
+echo "llama-server did not come up within 30s - check $HOME/.llama-server.log"
+return 1
+}
+
+stop_llama_server(){
+pkill -x llama-server 2>/dev/null || true
+local i
+for i in $(seq 1 10); do
+    pgrep -x llama-server >/dev/null 2>&1 || return 0
+    sleep 0.5
+done
+pkill -9 -x llama-server 2>/dev/null || true
+sleep 1
+return 0
+}
+
+#Restart = stop + start, so a config change reaches the running server
+#(same mental model as menu 5 for Ollama).
+restart_llama_server(){
+stop_llama_server
+start_llama_server
+}
+
 start_ollama() {
 if ! pgrep -f "ollama serve" >/dev/null; then
  echo "Starting Ollama..."
@@ -339,7 +433,8 @@ echo "5) Restart Ollama"
 echo "6) Benchmark Model"
 echo "7) Clear Cache"
 echo "8) Ubuntu Dev Menu (aider / opencode / freebuff / android memory)"
-echo "9) Quit"
+echo "9) llama.cpp server (start/restart/stop - serves the same GGUFs)"
+echo "10) Quit"
 read -p "Choice: " m || exit 0
 case "$m" in
 1) chat;;
@@ -350,5 +445,13 @@ case "$m" in
 6) bench_model;;
 7) clear-ai-cache;;
 8) ubuntu_menu;;
+9)
+    echo "1) Start/Restart  2) Stop  0) Back"
+    read -p "llama-server: " l
+    case "$l" in
+        1) restart_llama_server || true;;
+        2) stop_llama_server;;
+    esac
+    ;;
 *) exit 0;;
 esac
