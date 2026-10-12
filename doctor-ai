@@ -16,10 +16,35 @@ fail() {
     echo -e "${RED}✗${RESET} $1"
 }
 
+# Same nested-proot detection as code-ubuntu/adbb-ai. Three signals, because
+# a Freebuff/nested session can see Termux's bind-mounted /data/data with no
+# PROOT_DISTRO exported (device-observed) — /etc/os-release ID=ubuntu is the
+# deciding signal: only the container has it. Running doctor-ai inside proot
+# is fine — but the Ubuntu-side checks would otherwise try to proot-distro
+# login from within proot and report false "missing" rows. Detect once;
+# Ubuntu checks then probe the local rootfs directly instead.
+IN_PROOT=false
+if [ -n "${PROOT_DISTRO:-}" ] || [ ! -d "/data/data/com.termux" ] || \
+   { [ -r /etc/os-release ] && grep -q '^ID=ubuntu' /etc/os-release 2>/dev/null; }; then
+    IN_PROOT=true
+fi
+
 # Resolve a binary inside Ubuntu without relying on non-interactive PATH:
 # nvm/node installers append to ~/.bashrc after Ubuntu's interactive-only
 # guard, so 'bash -lc' shells never see npm-installed CLIs.
+# Inside proot we ARE that Ubuntu — probe the candidate paths directly
+# (proot-distro login cannot nest inside proot). The nvm glob must be
+# UNQUOTED to expand across node versions (device-caught: a quoted glob
+# segment never matched, hiding OpenCode).
 in_ubuntu_path() {
+    if [ "$IN_PROOT" = true ]; then
+        local c
+        for c in "/usr/local/bin/$1" "/usr/bin/$1" "$HOME/.local/bin/$1" \
+                 $HOME/.nvm/versions/node/*/bin/$1 "$HOME/.opencode/bin/$1"; do
+            [ -x "$c" ] && { echo "$c"; return 0; }
+        done
+        return 1
+    fi
     proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc '
         for c in "/usr/local/bin/$1" "/usr/bin/$1" "/root/.local/bin/$1" \
                  "/root/.nvm/versions/node/"*/"bin/$1" "/root/.opencode/bin/$1"; do
@@ -29,10 +54,25 @@ in_ubuntu_path() {
     ' bash "$1" 2>/dev/null
 }
 
+# Run a command in the Ubuntu context (proot-distro login, or direct when
+# nested). Usage: run_ubuntu 'command string'
+run_ubuntu() {
+    if [ "$IN_PROOT" = true ]; then
+        bash -c "$1" 2>/dev/null
+    else
+        proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "$1" 2>/dev/null
+    fi
+}
+
 echo
 echo "AI Environment Doctor"
 echo "====================="
 echo
+if [ "$IN_PROOT" = true ]; then
+    echo "(running INSIDE proot Ubuntu - Ubuntu checks probe the local"
+    echo " rootfs directly instead of nesting another proot session)"
+    echo
+fi
 
 # llama.cpp is the primary engine (Ollama retired, Phase 3).
 LLAMA_PORT="${LLAMA_SERVER_PORT:-8080}"
@@ -40,7 +80,7 @@ command -v llama-server >/dev/null \
     && pass "llama-server installed" \
     || fail "llama-server missing (pkg install llama-cpp)"
 
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'command -v aider' >/dev/null 2>&1 \
+run_ubuntu 'command -v aider' >/dev/null 2>&1 \
     && pass "Aider installed" \
     || fail "Aider missing"
 
@@ -54,9 +94,13 @@ FB_BIN=$(in_ubuntu_path freebuff)
     && pass "Freebuff installed" \
     || fail "Freebuff missing (optional - run 'update-ai')"
 
-command -v proot-distro >/dev/null \
-    && pass "proot-distro installed" \
-    || fail "proot-distro missing"
+if [ "$IN_PROOT" = true ]; then
+    echo "(proot-distro check skipped: nested inside proot)"
+else
+    command -v proot-distro >/dev/null \
+        && pass "proot-distro installed" \
+        || fail "proot-distro missing"
+fi
 
 command -v llama-cli >/dev/null \
     && pass "llama-cli installed (bench.py)" \
@@ -83,11 +127,21 @@ command -v python3 >/dev/null \
     && pass "python3 installed (bench scripts)" \
     || fail "python3 missing (needed for bench scripts)"
 
-proot-distro login "$UBUNTU_DISTRO_NAME" -- true >/dev/null 2>&1 \
-    && pass "Ubuntu launches" \
-    || fail "Ubuntu failed"
+if [ "$IN_PROOT" = true ]; then
+    pass "Ubuntu launches (native - we ARE in Ubuntu)"
+else
+    proot-distro login "$UBUNTU_DISTRO_NAME" -- true >/dev/null 2>&1 \
+        && pass "Ubuntu launches" \
+        || fail "Ubuntu failed"
+fi
 
-NGGUF=$(find "${LLAMA_MODELS_DIR:-$HOME/.llama/models}" -maxdepth 2 -name '*.gguf' 2>/dev/null | wc -l)
+#Model sources mirror code's config block: android-home/models is primary
+#(resolvable from BOTH homes via the android-home symlink), legacy Ollama
+#blobs second.
+LMDIR=$(find "$HOME/android-home/models" /data/data/com.termux/files/home/android-home/models \
+    -maxdepth 1 -name models -type d 2>/dev/null | head -1)
+[ -n "$LMDIR" ] || LMDIR="${LLAMA_MODELS_DIR:-$HOME/.llama/models}"
+NGGUF=$(find "$LMDIR" -maxdepth 2 -name '*.gguf' 2>/dev/null | wc -l)
 NBLOBS=$(find "${OLLAMA_MODELS:-$HOME/.ollama/models}/blobs" -maxdepth 1 -type f -size +100M 2>/dev/null | wc -l)
 NTOT=$((NGGUF + NBLOBS))
 if [ "$NTOT" -gt 0 ]; then
@@ -101,15 +155,15 @@ echo "Versions"
 echo "--------"
 
 llama-server --version 2>/dev/null | head -1
-proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc 'aider --version'
+run_ubuntu 'aider --version'
 if [ -n "$OC_BIN" ]; then
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "'$OC_BIN' --version"
+    run_ubuntu "'$OC_BIN' --version"
 else
     echo "opencode: not installed"
 fi
 
 if [ -n "$FB_BIN" ]; then
-    proot-distro login "$UBUNTU_DISTRO_NAME" -- bash -lc "'$FB_BIN' --version 2>/dev/null || echo 'freebuff: installed (version unknown)'"
+    run_ubuntu "'$FB_BIN' --version 2>/dev/null || echo 'freebuff: installed (version unknown)'"
 else
     echo "freebuff: not installed"
 fi
