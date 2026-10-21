@@ -106,12 +106,21 @@ command -v llama-cli >/dev/null \
     && pass "llama-cli installed (bench.py)" \
     || fail "llama-cli missing (needed for bench.py)"
 
-pgrep -x llama-server >/dev/null 2>&1 \
-    && pass "llama-server running" \
-    || echo "  (llama-server not running - 'code' > 5 starts it)"
-curl -s -m 3 "http://127.0.0.1:$LLAMA_PORT/health" </dev/null >/dev/null 2>&1 \
-    && pass "llama.cpp API reachable (:$LLAMA_PORT)" \
-    || echo "  (llama.cpp API unreachable - start the server for aider/OpenCode to work)"
+# A host-side llama-server is invisible to pgrep from inside proot (the
+# container only sees its own /proc) — there the health endpoint is the only
+# honest signal; on the host both signals exist.
+if [ "$IN_PROOT" = true ]; then
+    curl -s -m 3 "http://127.0.0.1:$LLAMA_PORT/health" </dev/null >/dev/null 2>&1 \
+        && pass "llama.cpp server running (API :$LLAMA_PORT reachable)" \
+        || echo "  (llama.cpp not reachable - start it on the Termux side: 'code' > 5)"
+else
+    pgrep -x llama-server >/dev/null 2>&1 \
+        && pass "llama-server running" \
+        || echo "  (llama-server not running - 'code' > 5 starts it)"
+    curl -s -m 3 "http://127.0.0.1:$LLAMA_PORT/health" </dev/null >/dev/null 2>&1 \
+        && pass "llama.cpp API reachable (:$LLAMA_PORT)" \
+        || echo "  (llama.cpp API unreachable - start the server for aider/OpenCode to work)"
+fi
 
 # BigMoeOnEdge (Phase 2): optional second engine, built in the Ubuntu clone.
 BMOE_BIN=$(in_ubuntu_path bmoe-cli)

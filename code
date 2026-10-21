@@ -82,8 +82,33 @@ fi
 return 1
 }
 
+#Model llama-server loads at start. LLAMA_MODEL from config wins outright;
+#auto (the default) keeps its deterministic pick (newest .gguf, else biggest
+#legacy blob) as the fallback, but when the store holds several models the
+#user is offered the list - Enter keeps the auto pick, and so does EOF, so
+#a scripted/non-interactive start behaves exactly like before.
+llama_choose_model(){
+local auto_pick="$1" i pick default_idx=0
+#UI goes to stderr: callers capture stdout for the model path, and echoing
+#the menu there would put menu text inside -m instead of a file (caught
+#exactly that way by the stubbed-function harness).
+load_models >&2 || { echo "$auto_pick"; return 0; }
+[ ${#MODELS[@]} -le 1 ] && { echo "$auto_pick"; return 0; }
+echo "Models available (Enter = newest .gguf, which is $(basename "$auto_pick")):" >&2
+for i in "${!MODELS[@]}"; do
+    echo "  $((i+1))) $(basename "${MODELS[i]}")  (${DISKS[i]}GB)" >&2
+    [ "${MODELS[i]}" = "$auto_pick" ] && default_idx=$((i+1))
+done
+read -rp "Load model [$default_idx]: " pick || pick=""
+if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le ${#MODELS[@]} ]; then
+    echo "${MODELS[pick-1]}"
+else
+    echo "$auto_pick"
+fi
+}
+
 start_llama_server(){
-local bin i MODEL_PATH
+local bin i MODEL_PATH AUTO_PICK
 bin=$(llama_bin) || { echo "llama-server not installed - run 'pkg install llama-cpp'"; return 1; }
 #Exact-name process check, not pgrep -f (device lesson: pgrep -f matches
 #probe command lines that contain the same words).
@@ -92,7 +117,8 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     return 0
 fi
 if [ "$LLAMA_MODEL" = "auto" ]; then
-    MODEL_PATH=$(llama_pick_model) || { echo "No .gguf found in ${LLAMA_MODELS_DIR:-$HOME/android-home/models} or the legacy Ollama blobs - import one via menu 2 first."; return 1; }
+    AUTO_PICK=$(llama_pick_model) || { echo "No .gguf found in ${LLAMA_MODELS_DIR:-$HOME/android-home/models} or the legacy Ollama blobs - import one via menu 2 first."; return 1; }
+    MODEL_PATH=$(llama_choose_model "$AUTO_PICK")
 else
     MODEL_PATH="$LLAMA_MODEL"
     [ -f "$MODEL_PATH" ] || { echo "LLAMA_MODEL=$MODEL_PATH (from ~/.ai-env.conf) does not exist."; return 1; }
@@ -272,9 +298,18 @@ select f in "${G[@]}"; do [ -n "$f" ] && break; done
 # No registry anymore (Ollama retired): importing = moving the file into the
 # models dir llama-server loads from. cp first so the source stays until the
 # copy landed (phone flash interrupting a mv is how files used to vanish).
-mkdir -p "${LLAMA_MODELS_DIR:-$HOME/android-home/models}"
-cp -v "$f" "${LLAMA_MODELS_DIR:-$HOME/android-home/models}/" \
-    && echo "Imported: available to llama-server on next start (menu 5)."
+# GGUF_DIR and the models dir both default to android-home/models — the SAME
+# directory - so a picked file is often already in place and cp used to
+# refuse with 'are the same file'. realpath-resolve both: a match means
+# already imported, which is success (idempotent), not an error.
+LLAMA_DIR="${LLAMA_MODELS_DIR:-$HOME/android-home/models}"
+mkdir -p "$LLAMA_DIR"
+if [ "$(realpath -- "$f")" = "$(realpath -- "$LLAMA_DIR")/$(basename "$f")" ]; then
+    echo "Already in $LLAMA_DIR - nothing to copy (menu 5 loads it)."
+else
+    cp -v -- "$f" "$LLAMA_DIR/" \
+        && echo "Imported: available to llama-server on next start (menu 5)."
+fi
 }
 
 

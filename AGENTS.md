@@ -6,41 +6,53 @@ so any coding agent picks it up; `CLAUDE.md` just points here.
 ## What this is
 
 Installer and launcher scripts for an on-device AI coding environment: Termux (host)
-runs Ollama, a proot-distro Ubuntu container runs Aider and OpenCode, helper scripts
-tie them together. The audience is a phone with limited RAM and storage — assume
-nothing about the host beyond Termux + Android storage access.
+runs **llama.cpp (`llama-server`, the primary engine — Ollama was retired in the
+Phase-3 engine migration and its model blobs remain usable)**, a proot-distro
+Ubuntu container runs Aider, OpenCode and BMoE (`bmoe-cli`, the flash-streamed MoE
+engine), and helper scripts tie it all together. The audience is a phone with
+limited RAM and storage — assume nothing about the host beyond Termux + Android
+storage access.
 
 ## Project map
 
 - `update-ai` — the installer/updater. Runs in Termux host only. Creates
   `~/.ai-env.conf`, installs/updates Ubuntu proot, Python/uv/Aider (in Ubuntu),
-  Ollama (host), OpenCode (in Ubuntu, optional), storage symlinks, bin links.
+  llama.cpp (`pkg llama-cpp`), OpenCode (in Ubuntu, optional), the BigMoeOnEdge
+  engine (pull + build + `bmoe-arm64/install.sh` inside the `BMOE_PROJECT_DIR`
+  clone — best-effort, warnings-not-deaths), storage symlinks, bin links;
+  optionally uninstalls the retired Ollama package (model blobs stay).
 - `code` — interactive Termux (host) launcher, host-only responsibilities:
-  Ollama env tuning (flash attention, q8_0 KV cache, single loaded model,
-  `OLLAMA_NUM_PARALLEL=1` — Ollama's default of 4 multiplies KV-cache RAM 4x
-  and alone can keep a 7b model from loading on a 12 GB phone — plus
-  `OLLAMA_KEEP_ALIVE=-1` (model reloads cost minutes on a phone; idle RAM is
-  cheaper than cold reloads), `OLLAMA_LOAD_TIMEOUT=15m` (Ollama's 5m default is
-  tight for phone flash), `OLLAMA_CONTEXT_LENGTH`, and `OLLAMA_MODELS` pinned
-  explicitly: an ollama **package upgrade can silently change the binary's
-  default data dir**, making every model vanish from `ollama list` while
-  `~/.ollama/models` is still full — device-seen; env changes only reach a
-  running server via restart), ollama CLI chat, GGUF
-  import, benchmarks, and menu option 8 = one proot session running
-  `code-ubuntu`. It no longer launches container apps through wrapped
+  the llama.cpp server and its tuning (`-t 4` measured best on the S26,
+  `--alias llama-<filename>` replaces sha256-blob ids in `/v1/models`,
+  `LLAMA_MODEL=auto` loads the newest .gguf — with a pick list when several
+  models exist; Enter/EOF keeps the auto pick so scripted starts stay
+  deterministic; `LLAMA_CONTEXT_LENGTH`/`LLAMA_MODELS_DIR` config keys),
+  GGUF import (idempotent: picking a file already in the shared models dir
+  is "already imported", not an error — `GGUF_DIR` and `LLAMA_MODELS_DIR`
+  both default to `android-home/models`), benchmarks (menu 7), cache menu,
+  and menu option 9 = one proot session running `code-ubuntu` (menu
+  renumbered when Ollama menus retired — check the actual menu before
+  referencing numbers). It no longer launches container apps through wrapped
   `bash -lc` strings — that wrapper class produced the repo's worst bugs
   (PATH-export TUI wedge, brace-group parse error) and is gone.
 - `code-ubuntu` — the Ubuntu-side launcher: model/project pickers (via the
-  Ollama HTTP API — works from the container, no host CLI needed), aider /
+  llama.cpp HTTP API — works from the container, no host CLI needed), aider /
   opencode / freebuff launches by absolute path with no PATH exports,
+  **bmoe stream-chat launcher** (`bmoe` subcommand + menu 6: model picker
+  over the shared models dir, tunables `BMOE_CACHE_MB`/`BMOE_THREADS`/
+  `BMOE_IO_THREADS`, `BMOE_BIN` override; works with llama-server down),
   OpenCode config generation (writes the Ubuntu home natively), adb-ai
-  delegation, pre-launch quick-clean hook. Runs both via `code` option 8 AND
+  delegation, pre-launch quick-clean hook. Runs both via `code` option 9 AND
   bare in an `ubuntu` shell (linked into /usr/local/bin by update-ai).
-  Subcommands: aider|opencode|freebuff|regen-oc|mem|status. The generated
+  Subcommands: aider|opencode|freebuff|regen-oc|mem|bmoe|status. The generated
   OpenCode config must include `limit.output` for every model: OpenCode's
   schema requires it, and a schema-invalid config kills the TUI silently at
   startup (no error, no render).
-- `doctor-ai` — health checks and version report.
+- `doctor-ai` — health checks and version report. Detects running INSIDE
+  proot (nested: Freebuff/nested sessions see this) and then probes the
+  local rootfs directly instead of nesting — and base server-running on
+  the health endpoint there: `pgrep` can never see the host's llama-server
+  process from inside the container.
 - `clear-ai-cache` — tiered cache cleanup (Tier 1 safe / Tier 2 destructive, each
   prompted). Detects nested proot via parent-process walk.
 - `adb-ai` and `code-ubuntu` — run inside proot Ubuntu only: adb-ai pairs/connects wireless adb to the
@@ -55,7 +67,8 @@ nothing about the host beyond Termux + Android storage access.
 - `aider-ubuntu` — runs aider inside Ubuntu with argument passthrough via the
   `bash -lc 'aider "$@"' bash "$@"` trick. `aider-ubuntu.txt` is a tutorial
   explaining that trick — keep it in sync if the wrapper changes.
-- `add_models.sh` — one-shot `ollama create` calls for the repo's Modelfiles.
+- `add_models.sh` — legacy `ollama create` one-shot; superseded by `code` menu 2
+  (file import) and kept for the old Modelfiles only.
 - `uv_aider_install.sh` — manual fallback for the uv + Python + aider install.
 - `bench.py`, `bench_all.py` — llama.cpp benchmarks (require `llama-cli` /
   `llama-bench` on PATH, not Ollama): per-prompt tok/s + peak RSS → CSV;
@@ -71,9 +84,9 @@ nothing about the host beyond Termux + Android storage access.
    `/data/data/com.termux` check, and reach into Ubuntu only via
    `proot-distro login ... -- bash -lc`.
 2. **Everything is user-configurable through `~/.ai-env.conf`.** Distro name,
-   Python version, project dir, GGUF dir — source it, apply defaults with
-   `:-`, never hardcode paths. New tunables go in the config file and the
-   `update-ai` usage text together.
+   Python version, project dir, GGUF dir, llama.cpp server port/model/ctx,
+   BMOE tunables — source it, apply defaults with `:-`, never hardcode paths.
+   New tunables go in the config file and the `update-ai` usage text together.
 3. **Shebang must be `/data/data/com.termux/files/usr/bin/bash`** for scripts
    invoked as bare commands in Termux. (`update-ai` uses `/usr/bin/env bash`
    because it may run before the bin links exist — keep that distinction.)

@@ -62,6 +62,11 @@ Environment (via ~/.ai-env.conf):
                         via the clone's scripts/build-host.sh, and installs
                         the staged bmoe-arm64 bundle; failures are warnings
                         only.
+  BMOE_CACHE_MB      bmoe-cli stream-chat cache budget in MB (default: 2000;
+                        used by code-ubuntu's BMoE menu entry)
+  BMOE_THREADS       bmoe-cli decode threads (default: 8)
+  BMOE_IO_THREADS    bmoe-cli flash I/O threads for expert streaming
+                        (default: 4)
   ADB_AI              Android memory/adb tooling: run 'adb-ai' inside Ubuntu
                         (wireless adb to the phone, kill memory hogs, phantom
                         process killer off). Config: ~/.adb-ai.conf in the

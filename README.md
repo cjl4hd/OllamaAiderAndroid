@@ -45,13 +45,13 @@ Android
 
 | Command | Runs | What it does |
 |---|---|---|
-| `code` | Termux | Interactive host launcher: chat, GGUF import, benchmarks, server control; option 9 opens the Ubuntu dev menu |
+| `code` | Termux | Interactive host launcher: chat, GGUF import (re-importing a file already in the models dir is handled cleanly), benchmarks, server control with a model-load menu (Enter = newest .gguf); option 9 opens the Ubuntu dev menu |
 | `update-ai` | Termux | Install/update everything; creates `~/.ai-env.conf` |
 | `doctor-ai` | Termux | Health checks: installs, server, API reachability, versions |
 | `clear-ai-cache` | Termux | Tiered cache cleanup (Tier 1 safe / Tier 2 destructive) |
 | `adb-ai` | Ubuntu (proot) | Wireless adb to the phone itself + Android memory tiers: kill hogs (Facebook/Instagram), phantom-killer off, revert; run `ubuntu` first |
 | `ubuntu` | Termux | Shell into the Ubuntu container |
-| `code-ubuntu` | Ubuntu (proot) | Dev-side launcher: aider/opencode/freebuff menus, model pickers via llama-server, adb-ai; runs bare in an `ubuntu` shell too |
+| `code-ubuntu` | Ubuntu (proot) | Dev-side launcher: aider/opencode/freebuff/BMoE menus, model pickers via llama-server, adb-ai; runs bare in an `ubuntu` shell too |
 | `aider-ubuntu` | Termux | Run aider with args, e.g. `aider-ubuntu --model qwen --chat-mode ask` |
 | `add_models.sh` | Termux | Legacy: one-shot `ollama create` — superseded by menu 2 (file import) |
 | `uv_aider_install.sh` | Ubuntu | Manual fallback install of uv + Python 3.12 + aider-chat |
@@ -93,9 +93,15 @@ Android
 5. Android Memory (adb-ai) — wireless adb to the phone, tiered Android memory
    reduction (0 info / 1 safe kills / 2 persistent incl. phantom-killer off /
    3 root-gated, plus revert and tracked freezes)
+6. BMoE stream-chat — model picker over the shared models dir, then
+   `bmoe-cli --moe-stream --overlap --dense-weights anon --chatml --no-think`
+   on the picked GGUF: any MoE model bigger than RAM streams its expert
+   weights from flash (dense models load fully into RAM — use small ones).
+   Tunables `BMOE_CACHE_MB` / `BMOE_THREADS` / `BMOE_IO_THREADS`; works with
+   llama-server down too. Extra arguments pass through to `bmoe-cli`.
 q. Back
 
-Subcommands: `code-ubuntu aider|opencode|freebuff|regen-oc|mem|status`.
+Subcommands: `code-ubuntu aider|opencode|freebuff|regen-oc|mem|bmoe|status`.
 
 Note: `code-ubuntu` talks to llama-server over HTTP via `curl` — `update-ai`
 installs and checks curl inside Ubuntu alongside the other container-side
@@ -121,6 +127,9 @@ packages.
 | `LLAMA_CONTEXT_LENGTH` | `8192` | llama-server context window |
 | `LLAMA_THREADS` | `4` | llama-server compute threads (measured on-device) |
 | `BMOE_PROJECT_DIR` | `/root/projects/BigMoeOnEdge` | BigMoeOnEdge clone path inside Ubuntu that `update-ai` pulls + builds + installs (`bmoe-cli`, streamed MoE engine) |
+| `BMOE_CACHE_MB` | `2000` | bmoe-cli stream-chat cache budget in MB (code-ubuntu BMoE menu) |
+| `BMOE_THREADS` | `8` | bmoe-cli decode threads |
+| `BMOE_IO_THREADS` | `4` | bmoe-cli flash I/O threads for expert streaming |
 | `ADB_AI_AUTO_CLEAN` | `ask` | Pre-launch Android quick clean from `code` when RAM is low: `ask` / `always` / `never` |
 | `ADB_AI_LOW_RAM_GB` | `4` | Free-RAM threshold (GB) that triggers the pre-launch clean |
 
@@ -372,6 +381,13 @@ prompts, that's the new ask-based install flow — `-f` skips prompts.
      fail-soft — never block boot or `code` startup).
   5. Reconnect-notification idea: when the scan path succeeds after a
      rotation, log the new serial to the status banner to make drift visible.
+- BMoE ↔ aider/OpenCode bridge — decision recorded, not built: `bmoe-cli` is
+  a CLI with a `--session` JSON protocol, NOT an OpenAI-compatible server, so
+  using it behind aider/OpenCode needs either (a) a small local shim that
+  translates OpenAI chat requests into bmoe sessions, or (b) leaving BMoE as
+  a standalone stream-chat engine (`code-ubuntu` menu 6 / `bmoe` subcommand,
+  shipped). Decided to defer until a real MoE model has been through
+  stream-chat on device to see whether (b) is enough.
 - Add support for optional plugins/tools:
   - whisper
   - kiwix
